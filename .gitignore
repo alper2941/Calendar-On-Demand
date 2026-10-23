@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.asar
+*.asar.*
+credentials.json
+token.json
+.env
+docs/
+landing/
+.agents/
+HANDOFF.md
+release.ps1
+color_preview.html

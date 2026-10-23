@@ -1,0 +1,29 @@
+name: Surum Yayinla
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write   # yalnizca release olusturmak icin
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Google kimlik dosyasini Secret'tan olustur
+        shell: bash
+        env:
+          CREDENTIALS_JSON: ${{ secrets.CREDENTIALS_JSON }}
+        run: |
+          test -n "$CREDENTIALS_JSON" || { echo "CREDENTIALS_JSON secret eksik"; exit 1; }
+          printf '%s' "$CREDENTIALS_JSON" > credentials.json
+      - name: Depo sahibini ve surumu ayarla
+        shell: bash
+        run: |
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));p.build.publish.owner='${{ github.repository_owner }}';p.build.publish.repo='${{ github.event.repository.name }}';p.version='${GITHUB_REF_NAME#v}';fs.writeFileSync('package.json',JSON.stringify(p,null,2))"
+      - run: npm install --no-audit --no-fund
+      - run: npm run yayinla
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

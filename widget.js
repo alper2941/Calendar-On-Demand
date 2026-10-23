@@ -1,0 +1,2789 @@
+try {
+    const { ipcRenderer, shell } = require('electron');
+
+    let currentViewDate = new Date();
+    let events = [];
+    let selectedDay = null;
+    let startOfWeek = 0;
+    let currentViewMode = 'month';
+    let timeDisplayStyle = 'badge';
+    let isEndTimeUserModified = false;
+    let editingEvent = null;
+    let allCalendars = [];
+    let selectedCalendarIds = null;
+    let soundEnabled = true; // default ON, loaded from settings
+    let notificationsEnabled = false;
+    let notifyMinutesBefore = 15;
+    const notifiedEventIds = new Set(); // track already-fired notifications
+
+    let localTasks = [];
+    let taskFilter = 'all'; // 'all' | 'active' | 'completed'
+    let isTaskDrawerOpen = false;
+
+    // selectedCalendarIds will be loaded from ipcRenderer 'get-settings'
+
+    let lastSyncTime = 0;
+    let syncTimer = null;
+    let errorCount = 0;
+    const NORMAL_SYNC_INTERVAL = 900000; // 15 minutes
+    const BACKOFF_DELAYS = [60000, 120000, 240000, 900000]; // 1m, 2m, 4m, 15m
+
+    function scheduleNextSync(delay) {
+        if (syncTimer) {
+            clearTimeout(syncTimer);
+        }
+        syncTimer = setTimeout(fetchEvents, delay);
+    }
+
+    // Synthesize clean audio chimes programmatically
+    function playChimeSound(isCompleted) {
+        if (!soundEnabled) return; // Muted — skip
+        try {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContext) return;
+            const ctx = new AudioContext();
+            
+            if (isCompleted) {
+                // Happy double-chime for task completion (e.g. C5 -> A5)
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                
+                osc.type = 'sine';
+                const now = ctx.currentTime;
+                
+                // Play first note (523Hz)
+                osc.frequency.setValueAtTime(523.25, now);
+                gain.gain.setValueAtTime(0.15, now);
+                gain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+                
+                // Play second note (880Hz)
+                osc.frequency.setValueAtTime(880.00, now + 0.08);
+                gain.gain.setValueAtTime(0.15, now + 0.08);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+                
+                osc.start(now);
+                osc.stop(now + 0.4);
+            } else {
+                // Lower drop note for unchecking task
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                
+                osc.type = 'sine';
+                const now = ctx.currentTime;
+                
+                osc.frequency.setValueAtTime(329.63, now);
+                osc.frequency.exponentialRampToValueAtTime(220.00, now + 0.15);
+                
+                gain.gain.setValueAtTime(0.1, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+                
+                osc.start(now);
+                osc.stop(now + 0.16);
+            }
+        } catch (e) {
+            console.warn('Audio feedback failed to play:', e);
+        }
+    }
+
+    const GOOGLE_COLORS = {
+        "1": { name: "Lavender", bg: "#7986cb", fg: "#ffffff" },
+        "2": { name: "Sage", bg: "#33b679", fg: "#ffffff" },
+        "3": { name: "Grape", bg: "#8e24aa", fg: "#ffffff" },
+        "4": { name: "Flamingo", bg: "#e67c73", fg: "#ffffff" },
+        "5": { name: "Banana", bg: "#f6bf26", fg: "#000000" },
+        "6": { name: "Tangerine", bg: "#f4511e", fg: "#ffffff" },
+        "7": { name: "Peacock", bg: "#039be5", fg: "#ffffff" },
+        "8": { name: "Graphite", bg: "#616161", fg: "#ffffff" },
+        "9": { name: "Blueberry", bg: "#3f51b5", fg: "#ffffff" },
+        "10": { name: "Basil", bg: "#0b8043", fg: "#ffffff" },
+        "11": { name: "Tomato", bg: "#d50000", fg: "#ffffff" }
+    };
+
+    const HEX_TO_COLOR_ID = {
+        // Vibrant 5 colors
+        '#f44336': '11', // Red -> Tomato
+        '#ffeb3b': '5',  // Yellow -> Banana
+        '#4caf50': '10', // Green -> Basil
+        '#2196f3': '7',  // Blue -> Peacock
+        '#9c27b0': '3',  // Purple -> Grape
+        // Pastel colors
+        '#ff9e99': '4',  // Flamingo / Coral
+        '#ffc77d': '6',  // Tangerine
+        '#fff59d': '5',  // Banana
+        '#a5d6a7': '2',  // Sage
+        '#80cbc4': '7',  // Peacock
+        '#90caf9': '9',  // Blueberry
+        '#9fa8da': '1',  // Lavender
+        '#ce93d8': '1',  // Lilac -> Lavender (light purple)
+        '#f48fb1': '4',  // Flamingo / Pink
+        '#bcaaa4': '8',  // Graphite
+        // Google colors directly
+        '#7986cb': '1',
+        '#33b679': '2',
+        '#8e24aa': '3',
+        '#e67c73': '4',
+        '#f6bf26': '5',
+        '#f4511e': '6',
+        '#039be5': '7',
+        '#616161': '8',
+        '#3f51b5': '9',
+        '#0b8043': '10',
+        '#d50000': '11'
+    };
+
+    const KNOWN_EVENT_LABELS = {
+        '#039be5': '003b140f-3012-48f7-9e7d-166cdbe16ad3',
+        '#e67c73': '0af1212c-f5f9-45ef-854a-9a531ea3dfd4',
+        '#b39ddb': '0bcafdae-61d7-4522-b4c0-f7b130d43f8d',
+        '#4285f4': '2710de0b-c115-4aab-8599-231f3922684a',
+        '#8e24aa': '3a491bdf-6fb3-4067-8637-7b5be686f258',
+        '#d50000': '3b7f84a5-dfdf-47d0-9d99-cac494622864',
+        '#009688': '4dbf541b-f23c-4334-9b1e-89d2e5f510c0',
+        '#7986cb': '5c8d8fad-a2ac-4d09-955a-2cffcde9daf7',
+        '#7cb342': '6640e517-5c28-4da6-a47a-0dc217d1552d',
+        '#3f51b5': '7319d9a3-99c6-4f35-8769-9a4922feaa1e',
+        '#a79b8e': '77cad7f2-070a-4b1c-ae0b-c0017ae47279',
+        '#ad1457': '791b9c19-7afa-4039-896d-95fd347af26b',
+        '#d81b60': '80c17efb-d8c0-434e-b2ba-73dc32c6b052',
+        '#9e69af': '81f386db-5325-43e0-9635-b14a0c8274fc',
+        '#616161': 'a9f66e6d-a7a9-4944-8b9b-681ec3992650',
+        '#f09300': 'ab668a7c-b972-468a-ae5a-fc91a3485d32',
+        '#c0ca33': 'aed1288d-ef63-4d62-8f15-d55fb5ca0478',
+        '#795548': 'b6dd2404-2a69-4d93-9928-8aba5ed808a5', // Cocoa!
+        '#0b8043': 'ca63a595-1c65-4eeb-a4e6-4ae68a97dda1',
+        '#ef6c00': 'd166a987-221d-4905-b16e-eb2a62c32e71',
+        '#f6bf26': 'd1a0a86e-afa1-49df-8cb9-327e2303f40c',
+        '#e4c441': 'd562ceab-68a4-44a7-ba69-a8ada474bad7',
+        '#f4511e': 'd904da41-4b00-4630-bc9a-a94524a66da7',
+        '#33b679': 'f97da844-2969-464c-91be-36deb8c37f7b'
+    };
+
+    const LABEL_ID_TO_HEX = {};
+    for (const [hex, id] of Object.entries(KNOWN_EVENT_LABELS)) {
+        LABEL_ID_TO_HEX[id] = hex;
+    }
+
+    function findLabelHex(labelId) {
+        if (LABEL_ID_TO_HEX[labelId]) return LABEL_ID_TO_HEX[labelId];
+        if (allCalendars) {
+            for (const cal of allCalendars) {
+                if (cal.eventLabels) {
+                    const found = cal.eventLabels.find(l => l.id === labelId);
+                    if (found) return found.backgroundColor.toLowerCase();
+                }
+            }
+        }
+        return null;
+    }
+
+    function findLabelId(hex) {
+        const lowerHex = hex.toLowerCase();
+        if (KNOWN_EVENT_LABELS[lowerHex]) return KNOWN_EVENT_LABELS[lowerHex];
+        if (allCalendars) {
+            for (const cal of allCalendars) {
+                if (cal.eventLabels) {
+                    const found = cal.eventLabels.find(l => l.backgroundColor.toLowerCase() === lowerHex);
+                    if (found) return found.id;
+                }
+            }
+        }
+        return null;
+    }
+
+    function getContrastTextColor(hex) {
+        if (!hex || hex.startsWith('var(') || hex === 'default') return '#ffffff';
+        let c = hex.replace('#', '');
+        if (c.length === 3) c = c.split('').map(x => x + x).join('');
+        const r = parseInt(c.substr(0, 2), 16), g = parseInt(c.substr(2, 2), 16), b = parseInt(c.substr(4, 2), 16);
+        if (isNaN(r) || isNaN(g) || isNaN(b)) return '#ffffff';
+        const yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000;
+        return yiq >= 110 ? '#18181b' : '#ffffff';
+    }
+
+    function getEventColor(e) {
+        if (!e) return 'var(--accent-color)';
+        if (e.eventLabelId) {
+            const labelHex = findLabelHex(e.eventLabelId);
+            if (labelHex) return labelHex;
+        }
+        if (e.colorId && GOOGLE_COLORS[e.colorId]) {
+            return GOOGLE_COLORS[e.colorId].bg;
+        }
+        if (e.summary) {
+            const colorMatch = e.summary.match(/\[COLOR:(#[0-9a-fA-F]{3,6})\]/);
+            if (colorMatch) return colorMatch[1];
+        }
+        return e.backgroundColor || 'var(--accent-color)';
+    }
+
+    function stripTags(summary) {
+        if (!summary) return '';
+        return summary
+            .replace(/^\[[x ]\]\s*/, '') // Remove [x] or [ ] prefixes
+            .replace(/\[HIGHLIGHT\]/g, '')
+            .replace(/\[IMPORTANT\]/g, '')
+            .replace(/\[COLOR:#[0-9a-fA-F]{3,6}\]/g, '')
+            .trim();
+    }
+
+    function cleanDisplaySummary(summary, hasTime = false) {
+        let cleaned = stripTags(summary).trim();
+        if (!hasTime || !cleaned) return cleaned;
+
+        const t = '(?:(?:[0-1]?[0-9]|2[0-3]):[0-5][0-9]|(?:[0-1][0-9]|2[0-3])[0-5][0-9])';
+        const sep = '\\s*(?:[~-]|to)\\s*';
+
+        // Strip trailing time range: e.g. "Meeting 14:00-15:00", "Meeting 1400-1500"
+        const trailingRange = new RegExp('\\s+' + t + sep + t + '$', 'i');
+        let withoutTime = cleaned.replace(trailingRange, '');
+
+        // Strip single trailing time: e.g. "Test 15:00", "Test 1500"
+        const trailingSingle = new RegExp('\\s+' + t + '$', 'i');
+        withoutTime = withoutTime.replace(trailingSingle, '');
+
+        // Strip leading time range: e.g. "14:00-15:00 Meeting"
+        const leadingRange = new RegExp('^' + t + sep + t + '\\s*', 'i');
+        withoutTime = withoutTime.replace(leadingRange, '');
+
+        // Strip single leading time: e.g. "15:00 Test", "1500 Test"
+        const leadingSingle = new RegExp('^' + t + '\\s*', 'i');
+        withoutTime = withoutTime.replace(leadingSingle, '');
+
+        withoutTime = withoutTime.trim();
+        return withoutTime.length > 0 ? withoutTime : cleaned;
+    }
+
+    // DOM Elements
+    const calendarDays = document.getElementById('calendar-days');
+    const calendarHeader = document.querySelector('.calendar-grid-header');
+    const currentMonthYear = document.getElementById('current-month-year');
+    const prevMonthBtn = document.getElementById('prev-month');
+    const nextMonthBtn = document.getElementById('next-month');
+    const homeBtn = document.getElementById('home-btn');
+    const syncBtn = document.getElementById('sync-btn');
+    const lockBtn = document.getElementById('lock-btn');
+    const quickAddModal = document.getElementById('quick-add-modal');
+    const quickAddInput = document.getElementById('quick-add-input');
+    const allDayCheck = document.getElementById('all-day-check');
+    const eventStartTime = document.getElementById('event-start-time');
+    const eventEndTime = document.getElementById('event-end-time');
+    const timeInputsContainer = document.getElementById('time-inputs-container');
+    const eventStartDate = document.getElementById('event-start-date');
+    const eventEndDate = document.getElementById('event-end-date');
+    const allDayStatusText = document.getElementById('allday-status-text');
+    const eventLocationInput = document.getElementById('event-location');
+    const eventDescriptionInput = document.getElementById('event-description');
+    const extraFields = document.getElementById('extra-fields');
+    const toggleExtraBtn = document.getElementById('toggle-extra');
+    const syncIndicator = document.getElementById('sync-indicator');
+    const eventPopup = document.getElementById('event-popup');
+    const saveEventBtn = document.getElementById('save-event');
+    const settingsToggle = document.getElementById('settings-toggle');
+    const settingsOverlay = document.getElementById('settings-overlay');
+    const opacitySlider = document.getElementById('opacity-slider');
+    const alwaysOnTopCheck = document.getElementById('always-on-top-check');
+    const lockPositionCheck = document.getElementById('lock-position-check');
+    const desktopModeCheck = document.getElementById('desktop-mode-check');
+    const startupCheck = document.getElementById('startup-check');
+    const startOfWeekSelect = document.getElementById('start-of-week-select');
+    const bgColorPicker = document.getElementById('bg-color-picker');
+    const textColorPicker = document.getElementById('text-color-picker');
+    const accentColorPicker = document.getElementById('accent-color-picker');
+    const todayColorPicker = document.getElementById('today-color-picker');
+    const resetSettingsBtn = document.getElementById('reset-settings');
+    const closeSettings = document.getElementById('close-settings');
+    const closePopupBtn = document.getElementById('close-popup');
+    const reauthBtn = document.getElementById('reauth-btn');
+    const appVersionLabel = document.getElementById('settings-app-version');
+    const soundEnabledCheck = document.getElementById('sound-enabled-check');
+    const addAccountBtn = document.getElementById('add-account-btn');
+    const accountsList = document.getElementById('accounts-list');
+    const viewToggleBtn = document.getElementById('view-toggle-btn');
+    const defaultViewSelect = document.getElementById('default-view-select');
+    const timeStyleSelect = document.getElementById('time-style-select');
+    const notificationsEnabledCheck = document.getElementById('notifications-enabled-check');
+    const notifyBeforeRow = document.getElementById('notify-before-row');
+    const notifyMinutesGroup = document.getElementById('notify-minutes-group');
+    const hotkeyPresetSelect = document.getElementById('hotkey-preset-select');
+    const taskHotkeyPresetSelect = document.getElementById('task-hotkey-preset-select');
+
+    // Containers for Month & Week Timeline Views
+    const monthViewContainer = document.getElementById('month-view-container');
+    const weekViewContainer = document.getElementById('week-view-container');
+    const weekHeaderRow = document.getElementById('week-header-row');
+    const weekAlldayRow = document.getElementById('week-allday-row');
+    const weekScrollContainer = document.getElementById('week-scroll-container');
+    const weekTimeGutter = document.getElementById('week-time-gutter');
+    const weekDaysColumns = document.getElementById('week-days-columns');
+    const HOUR_HEIGHT = 48;
+    let hasScrolledWeekTimeline = false;
+
+    // New Todo list container
+    const todoListContainer = document.getElementById('todo-list-container');
+    const todoDateTitle = document.getElementById('todo-date-title');
+
+    // Side Task Drawer Elements
+    const taskDrawerToggle = document.getElementById('task-drawer-toggle');
+    const taskDrawer = document.getElementById('task-drawer');
+    const taskDrawerBadge = document.getElementById('task-drawer-badge');
+    const drawerCountBadge = document.getElementById('drawer-count-badge');
+    const closeDrawerBtn = document.getElementById('close-drawer-btn');
+    const drawerTaskInput = document.getElementById('drawer-task-input');
+    const drawerAddBtn = document.getElementById('drawer-add-btn');
+    const drawerTaskList = document.getElementById('drawer-task-list');
+    const drawerTabs = document.querySelectorAll('.drawer-tab');
+
+    function updateAllDayUI() {
+        if (!allDayCheck) return;
+        if (allDayCheck.checked) {
+            if (timeInputsContainer) timeInputsContainer.classList.add('hidden');
+            if (allDayStatusText) allDayStatusText.classList.remove('hidden');
+        } else {
+            if (timeInputsContainer) timeInputsContainer.classList.remove('hidden', 'disabled');
+            if (allDayStatusText) allDayStatusText.classList.add('hidden');
+            if (eventStartTime && !eventStartTime.value) {
+                const now = new Date();
+                const nextH = (now.getHours() + 1) % 24;
+                const endH = (nextH + 1) % 24;
+                eventStartTime.value = `${nextH.toString().padStart(2, '0')}:00`;
+                if (eventEndTime && !isEndTimeUserModified) eventEndTime.value = `${endH.toString().padStart(2, '0')}:00`;
+            }
+        }
+    }
+
+    function syncMultiDayAllDayState() {
+        if (eventStartDate && eventEndDate && eventStartDate.value && eventEndDate.value) {
+            if (eventStartDate.value !== eventEndDate.value) {
+                // Multi-day events are strictly All-day (like Google Calendar)
+                if (allDayCheck && !allDayCheck.checked) {
+                    allDayCheck.checked = true;
+                    updateAllDayUI();
+                }
+            }
+        }
+    }
+
+    if (allDayCheck) {
+        allDayCheck.addEventListener('change', () => {
+            if (!allDayCheck.checked) {
+                // If user unchecks all-day, timed events must be single day
+                if (eventStartDate && eventEndDate && eventStartDate.value !== eventEndDate.value) {
+                    eventEndDate.value = eventStartDate.value;
+                }
+            }
+            updateAllDayUI();
+        });
+    }
+
+    if (eventStartDate) {
+        eventStartDate.addEventListener('change', () => {
+            if (eventStartDate.value && eventEndDate && (!eventEndDate.value || eventEndDate.value < eventStartDate.value)) {
+                eventEndDate.value = eventStartDate.value;
+            }
+            syncMultiDayAllDayState();
+        });
+    }
+
+    if (eventEndDate) {
+        eventEndDate.addEventListener('change', () => {
+            if (eventEndDate.value && eventStartDate && (!eventStartDate.value || eventEndDate.value < eventStartDate.value)) {
+                eventStartDate.value = eventEndDate.value;
+            }
+            syncMultiDayAllDayState();
+        });
+    }
+
+    if (eventStartTime) {
+        eventStartTime.addEventListener('change', () => {
+            if (allDayCheck && allDayCheck.checked) {
+                allDayCheck.checked = false;
+                updateAllDayUI();
+            }
+            if (eventStartTime.value && eventEndTime) {
+                const [h, m] = eventStartTime.value.split(':').map(Number);
+                if (isEndTimeUserModified && eventEndTime.value) {
+                    const [oldEH, oldEM] = eventEndTime.value.split(':').map(Number);
+                    const startMins = h * 60 + m;
+                    let durationMins = (oldEH * 60 + oldEM) - startMins;
+                    if (durationMins <= 0) durationMins = 60;
+                    const newEndMins = (startMins + durationMins) % (24 * 60);
+                    const endH = Math.floor(newEndMins / 60);
+                    const endM = newEndMins % 60;
+                    eventEndTime.value = `${endH.toString().padStart(2, '0')}:${endM.toString().padStart(2, '0')}`;
+                } else {
+                    const nextH = (h + 1) % 24;
+                    eventEndTime.value = `${nextH.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+                }
+            }
+        });
+    }
+
+    if (eventEndTime) {
+        eventEndTime.addEventListener('change', () => {
+            isEndTimeUserModified = true;
+            if (allDayCheck && allDayCheck.checked) {
+                allDayCheck.checked = false;
+                updateAllDayUI();
+            }
+        });
+    }
+
+    if (quickAddInput) {
+        quickAddInput.addEventListener('input', () => {
+            const val = quickAddInput.value;
+            const durationMatch = val.match(/(?:^|\s)(\d{1,2}:?\d{2})\s*(?:[~-]|to)\s*(\d{1,2}:?\d{2})(?:\s|$)/i);
+            const singleTimeMatch = val.match(/(?:^|\s)(\d{1,2}:?\d{2})(?:\s|$)/);
+
+            function formatPart(t) {
+                if (t.includes(':')) return t.padStart(5, '0');
+                if (t.length === 3) return `0${t[0]}:${t.slice(1)}`;
+                if (t.length === 4) return `${t.slice(0, 2)}:${t.slice(2)}`;
+                return t;
+            }
+
+            if (durationMatch) {
+                const s = formatPart(durationMatch[1]);
+                const e = formatPart(durationMatch[2]);
+                if (s && e) {
+                    if (eventStartTime) eventStartTime.value = s;
+                    if (eventEndTime) eventEndTime.value = e;
+                    isEndTimeUserModified = true;
+                    if (allDayCheck) {
+                        allDayCheck.checked = false;
+                        updateAllDayUI();
+                    }
+                }
+            } else if (singleTimeMatch) {
+                const s = formatPart(singleTimeMatch[1]);
+                if (s && s.length === 5) {
+                    if (eventStartTime) eventStartTime.value = s;
+                    if (!isEndTimeUserModified && eventEndTime) {
+                        const [h, m] = s.split(':').map(Number);
+                        const nextH = (h + 1) % 24;
+                        eventEndTime.value = `${nextH.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+                    }
+                    if (allDayCheck) {
+                        allDayCheck.checked = false;
+                        updateAllDayUI();
+                    }
+                }
+            }
+        });
+    }
+
+    if (reauthBtn) reauthBtn.onclick = () => ipcRenderer.invoke('reset-auth');
+
+    document.querySelectorAll('.color-opt').forEach(btn => {
+        btn.onclick = () => {
+            document.querySelectorAll('.color-opt').forEach(b => b.classList.remove('active'));
+            document.getElementById('default-color-btn')?.classList.remove('active');
+            btn.classList.add('active');
+            if (document.getElementById('selected-entry-color')) {
+                document.getElementById('selected-entry-color').value = btn.getAttribute('data-color') || btn.getAttribute('data-color-id');
+            }
+        };
+    });
+
+    const defaultBtn = document.getElementById('default-color-btn');
+    if (defaultBtn) {
+        defaultBtn.onclick = () => {
+            document.querySelectorAll('.color-opt').forEach(b => b.classList.remove('active'));
+            defaultBtn.classList.add('active');
+            if (document.getElementById('selected-entry-color')) {
+                document.getElementById('selected-entry-color').value = 'default';
+            }
+        };
+    }
+
+
+    const defaultTheme = {
+        'bg-base': '#ffffff',
+        'text-color': '#0f172a',
+        'accent-color': '#1a73e8',
+        'today-color': '#1a73e8',
+        'bg-opacity': 0.94
+    };
+
+    function applyTheme(theme) {
+        if (!theme) return;
+        Object.keys(theme).forEach(key => {
+            const val = theme[key];
+            if (val !== undefined && val !== null) {
+                document.documentElement.style.setProperty(`--${key}`, val);
+                const picker = document.getElementById(`${key}-picker`);
+                if (picker) picker.value = val;
+                if (key === 'bg-opacity' && opacitySlider) opacitySlider.value = val;
+            }
+        });
+
+        // Compute adaptive contrast variables based on text-color
+        const curTextColor = theme['text-color'] || document.getElementById('text-color-picker')?.value || '#0f172a';
+        const isLightText = getContrastTextColor(curTextColor) === '#18181b';
+        if (isLightText) {
+            document.documentElement.style.setProperty('--label-shadow', '0 1px 2px rgba(0, 0, 0, 0.65)');
+            document.documentElement.style.setProperty('--gutter-bg', 'rgba(0, 0, 0, 0.22)');
+            document.documentElement.style.setProperty('--text-muted', 'rgba(255, 255, 255, 0.85)');
+        } else {
+            document.documentElement.style.setProperty('--label-shadow', 'none');
+            document.documentElement.style.setProperty('--gutter-bg', 'rgba(0, 0, 0, 0.05)');
+            document.documentElement.style.setProperty('--text-muted', 'color-mix(in srgb, var(--text-color) 80%, transparent)');
+        }
+    }
+
+
+    function getLocalTZOffset() {
+        const tzOffset = -new Date().getTimezoneOffset();
+        const diff = tzOffset >= 0 ? '+' : '-';
+        const pad = (n) => n.toString().padStart(2, '0');
+        return diff + pad(Math.floor(Math.abs(tzOffset) / 60)) + ':' + pad(Math.abs(tzOffset) % 60);
+    }
+
+    function toggleViewMode(mode) {
+        if (mode) {
+            currentViewMode = mode;
+        } else {
+            currentViewMode = currentViewMode === 'month' ? 'week' : 'month';
+        }
+        hasScrolledWeekTimeline = false;
+        renderCalendar();
+        debouncedFetchEvents(250);
+    }
+
+    function localDateStr(d) {
+        return `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`;
+    }
+
+    function getEventDates(e) {
+        if (!e) return { startDate: '', endDate: '', isAllDay: false };
+        if (e.start && e.start.date) {
+            const startDate = e.start.date;
+            let endDate = e.end?.date || '';
+            if (!endDate || endDate <= startDate) {
+                const sParts = startDate.split('-').map(Number);
+                const s = new Date(sParts[0], sParts[1] - 1, sParts[2]);
+                s.setDate(s.getDate() + 1);
+                endDate = localDateStr(s);
+            }
+            return { startDate, endDate, isAllDay: true };
+        } else if (e.start && e.start.dateTime) {
+            const sDt = new Date(e.start.dateTime);
+            const eDt = e.end?.dateTime ? new Date(e.end.dateTime) : sDt;
+            const startDate = localDateStr(sDt);
+            let endDate = localDateStr(eDt);
+            if (eDt.getHours() === 0 && eDt.getMinutes() === 0 && endDate > startDate) {
+                const prevD = new Date(eDt);
+                prevD.setDate(prevD.getDate() - 1);
+                endDate = localDateStr(prevD);
+            }
+            return { startDate, endDate, isAllDay: false, sDt, eDt };
+        }
+        return { startDate: '', endDate: '', isAllDay: false };
+    }
+
+    function isEventOnDate(e, dateStr) {
+        const { startDate, endDate, isAllDay } = getEventDates(e);
+        if (!startDate) return false;
+        if (isAllDay) {
+            return dateStr >= startDate && dateStr < endDate;
+        } else {
+            return dateStr >= startDate && dateStr <= endDate;
+        }
+    }
+
+    function getEventDaySpanInfo(e, dateStr) {
+        const { startDate, endDate, isAllDay } = getEventDates(e);
+        if (!startDate) return null;
+        if (isAllDay) {
+            if (dateStr < startDate || dateStr >= endDate) return null;
+            const endParts = endDate.split('-').map(Number);
+            const endD = new Date(endParts[0], endParts[1] - 1, endParts[2]);
+            endD.setDate(endD.getDate() - 1);
+            const lastActiveDay = localDateStr(endD);
+            const isStartDay = (dateStr === startDate);
+            const isEndDay = (dateStr === lastActiveDay);
+            const isMultiDay = (startDate !== lastActiveDay);
+            const isContinuation = !isStartDay;
+            return { isAllDay: true, isStartDay, isEndDay, isMultiDay, isContinuation, startDate, lastActiveDay, endDateExclusive: endDate };
+        } else {
+            if (dateStr < startDate || dateStr > endDate) return null;
+            const isStartDay = (dateStr === startDate);
+            const isEndDay = (dateStr === endDate);
+            const isMultiDay = (startDate !== endDate);
+            const isContinuation = !isStartDay;
+            return { isAllDay: false, isStartDay, isEndDay, isMultiDay, isContinuation, startDate, lastActiveDay: endDate };
+        }
+    }
+
+    function renderCalendar() {
+        if (viewToggleBtn) {
+            viewToggleBtn.innerHTML = currentViewMode === 'month' 
+                ? `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M9 3v18"/><path d="M15 3v18"/><rect x="9.75" y="7" width="4.5" height="5" rx="1" fill="currentColor" fill-opacity="0.35" stroke="none"/></svg>` 
+                : `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="4" rx="3.5" ry="3.5"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/><circle cx="8" cy="15" r="1.3" fill="currentColor"/><circle cx="12" cy="15" r="1.3" fill="currentColor"/><circle cx="16" cy="15" r="1.3" fill="currentColor"/></svg>`;
+            viewToggleBtn.title = currentViewMode === 'month' ? 'Haftalık görünüme geç (W)' : 'Aylık görünüme geç (M)';
+        }
+
+        if (currentViewMode === 'week') {
+            if (monthViewContainer) monthViewContainer.classList.add('hidden');
+            if (weekViewContainer) weekViewContainer.classList.remove('hidden');
+            renderWeekTimeline();
+        } else {
+            if (weekViewContainer) weekViewContainer.classList.add('hidden');
+            if (monthViewContainer) monthViewContainer.classList.remove('hidden');
+            renderMonthGrid();
+        }
+    }
+
+    function renderMonthGrid() {
+        if (!calendarDays || !calendarHeader) return;
+        calendarDays.innerHTML = '';
+        const year = currentViewDate.getFullYear();
+        const month = currentViewDate.getMonth();
+        if (currentMonthYear) currentMonthYear.innerText = new Intl.DateTimeFormat('tr-TR', { month: 'long', year: 'numeric' }).format(currentViewDate);
+
+        const days = ['Paz', 'Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt'];
+        const displayDays = startOfWeek === 0 ? days : ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'];
+        calendarHeader.innerHTML = displayDays.map(d => {
+            const cls = d === 'Paz' ? 'class="sunday"' : (d === 'Cmt' ? 'class="saturday"' : '');
+            return `<span ${cls}>${d}</span>`;
+        }).join('');
+
+        let firstDay = new Date(year, month, 1).getDay(); 
+        if (startOfWeek === 1) firstDay = (firstDay === 0 ? 6 : firstDay - 1);
+
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
+        const prevDaysInMonth = new Date(year, month, 0).getDate();
+        const today = new Date();
+
+        for (let i = firstDay; i > 0; i--) addDayCell(year, month - 1, prevDaysInMonth - i + 1, true);
+        for (let d = 1; d <= daysInMonth; d++) addDayCell(year, month, d, false, (today.getDate() === d && today.getMonth() === month && today.getFullYear() === year));
+        const totalCells = 42;
+        const remainingCells = totalCells - calendarDays.children.length;
+        for (let d = 1; d <= remainingCells; d++) addDayCell(year, month + 1, d, true);
+    }
+
+    function layoutDayTimedEvents(dayEvents, hourHeight, dateStr) {
+        const items = dayEvents.map(e => {
+            const s  = new Date(e.start.dateTime);
+            const eD = (e.end && e.end.dateTime) ? new Date(e.end.dateTime) : new Date(s.getTime() + 3600000);
+
+            const startDateStr    = localDateStr(s);
+            const endDateStr      = localDateStr(eD);
+            const crossesMidnight = !!(dateStr && startDateStr === dateStr && endDateStr !== dateStr);
+            const isContinuation  = !!(dateStr && startDateStr !== dateStr);
+
+            let startMins = s.getHours() * 60 + s.getMinutes();
+            let endMins   = eD.getHours() * 60 + eD.getMinutes();
+
+            if (crossesMidnight) {
+                endMins = 24 * 60;   // clip at midnight
+            } else if (isContinuation) {
+                startMins = 0;       // start from top of column
+            } else if (endMins <= startMins) {
+                endMins = startMins + 30;
+            }
+
+            const durationMins = Math.max(15, endMins - startMins);
+            return {
+                event: e,
+                startMins,
+                endMins,
+                durationMins,
+                top:    (startMins / 60) * hourHeight,
+                height: Math.max(22, (durationMins / 60) * hourHeight),
+                colIndex: 0,
+                totalCols: 1,
+                crossesMidnight,
+                isContinuation
+            };
+        });
+
+
+        items.sort((a, b) => a.startMins - b.startMins || b.durationMins - a.durationMins);
+
+        const clusters = [];
+        let currentCluster = [];
+        let clusterEnd = -1;
+
+        for (const item of items) {
+            if (currentCluster.length === 0 || item.startMins < clusterEnd) {
+                currentCluster.push(item);
+                clusterEnd = Math.max(clusterEnd, item.endMins);
+            } else {
+                clusters.push(currentCluster);
+                currentCluster = [item];
+                clusterEnd = item.endMins;
+            }
+        }
+        if (currentCluster.length > 0) clusters.push(currentCluster);
+
+        for (const cluster of clusters) {
+            const colEnds = [];
+            for (const item of cluster) {
+                let placed = false;
+                for (let i = 0; i < colEnds.length; i++) {
+                    if (item.startMins >= colEnds[i]) {
+                        item.colIndex = i;
+                        colEnds[i] = item.endMins;
+                        placed = true;
+                        break;
+                    }
+                }
+                if (!placed) {
+                    item.colIndex = colEnds.length;
+                    colEnds.push(item.endMins);
+                }
+            }
+            const totalCols = colEnds.length;
+            for (const item of cluster) {
+                item.totalCols = totalCols;
+            }
+        }
+
+        return items;
+    }
+
+    function scrollToSmartHour(force = false) {
+        if (!hasScrolledWeekTimeline || force) {
+            setTimeout(() => {
+                if (weekScrollContainer) {
+                    const now = new Date();
+                    const curH = now.getHours();
+                    const focusH = Math.max(0, Math.min(18, curH > 6 ? curH - 1 : 8));
+                    weekScrollContainer.scrollTop = focusH * HOUR_HEIGHT;
+                    hasScrolledWeekTimeline = true;
+                }
+            }, 30);
+        }
+    }
+
+    function renderWeekTimeline() {
+        if (!weekHeaderRow || !weekAlldayRow || !weekTimeGutter || !weekDaysColumns) return;
+
+        const curr = new Date(currentViewDate);
+        const dayOfWeek = curr.getDay();
+        let diffToStart = dayOfWeek - (startOfWeek === 0 ? 0 : 1);
+        if (diffToStart < 0) diffToStart += 7;
+
+        const weekStart = new Date(curr);
+        weekStart.setDate(curr.getDate() - diffToStart);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 6);
+
+        if (currentMonthYear) {
+            const startMonth = new Intl.DateTimeFormat('tr-TR', { month: 'short' }).format(weekStart);
+            const endMonth = new Intl.DateTimeFormat('tr-TR', { month: 'short' }).format(weekEnd);
+            if (weekStart.getFullYear() === weekEnd.getFullYear()) {
+                if (weekStart.getMonth() === weekEnd.getMonth()) {
+                    currentMonthYear.innerText = `${weekStart.getDate()} – ${weekEnd.getDate()} ${startMonth} ${weekStart.getFullYear()}`;
+                } else {
+                    currentMonthYear.innerText = `${weekStart.getDate()} ${startMonth} – ${weekEnd.getDate()} ${endMonth} ${weekStart.getFullYear()}`;
+                }
+            } else {
+                currentMonthYear.innerText = `${weekStart.getDate()} ${startMonth} ${weekStart.getFullYear()} – ${weekEnd.getDate()} ${endMonth} ${weekEnd.getFullYear()}`;
+            }
+        }
+
+        // 1. Time Gutter Labels (01:00 to 23:00)
+        weekTimeGutter.innerHTML = '';
+        for (let h = 1; h < 24; h++) {
+            const label = document.createElement('div');
+            label.className = 'week-time-label';
+            label.style.top = `${h * HOUR_HEIGHT}px`;
+            label.innerText = `${h.toString().padStart(2, '0')}:00`;
+            weekTimeGutter.appendChild(label);
+        }
+
+        // 2. Day Header Row
+        weekHeaderRow.innerHTML = '<div class="week-header-gutter"></div><div class="week-header-days" id="week-header-days"></div>';
+        const weekHeaderDays = document.getElementById('week-header-days');
+
+        // 3. All-Day Row
+        weekAlldayRow.innerHTML = '<div class="week-allday-gutter">Tüm gün</div><div class="week-allday-days" id="week-allday-days"></div>';
+        const weekAlldayDays = document.getElementById('week-allday-days');
+
+        // 4. Day Columns in Timeline Grid
+        weekDaysColumns.innerHTML = '';
+
+        const today = new Date();
+        let hasAnyAllDayEvents = false;
+
+        const dayNames = ['Paz', 'Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt'];
+
+        for (let i = 0; i < 7; i++) {
+            const dayDate = new Date(weekStart);
+            dayDate.setDate(weekStart.getDate() + i);
+
+            const y = dayDate.getFullYear();
+            const m = (dayDate.getMonth() + 1).toString().padStart(2, '0');
+            const d = dayDate.getDate().toString().padStart(2, '0');
+            const dateStr = `${y}-${m}-${d}`;
+            const isToday = (today.getDate() === dayDate.getDate() && today.getMonth() === dayDate.getMonth() && today.getFullYear() === dayDate.getFullYear());
+            const dOfWeek = dayDate.getDay();
+
+            // Header Cell
+            const headerCell = document.createElement('div');
+            headerCell.className = `week-header-day-cell ${isToday ? 'today' : ''} ${dOfWeek === 0 ? 'sunday' : ''} ${dOfWeek === 6 ? 'saturday' : ''}`;
+            headerCell.innerHTML = `
+                <span class="week-header-day-name">${dayNames[dOfWeek]}</span>
+                <span class="week-header-day-num">${dayDate.getDate()}</span>
+            `;
+            headerCell.onclick = () => {
+                editingEvent = null;
+                selectedDay = dateStr;
+                openQuickAdd();
+            };
+            if (weekHeaderDays) weekHeaderDays.appendChild(headerCell);
+
+            // Filter events for this day (timed + all-day)
+            const allDayEventsWithSpan = [];
+            const dayEvents = [];
+            const continuationEvents = [];
+
+            events.forEach(e => {
+                const spanInfo = getEventDaySpanInfo(e, dateStr);
+                if (!spanInfo) return;
+                if (spanInfo.isAllDay || spanInfo.isMultiDay) {
+                    allDayEventsWithSpan.push({ e, spanInfo });
+                } else if (spanInfo.isStartDay) {
+                    dayEvents.push(e);
+                } else if (spanInfo.isContinuation) {
+                    continuationEvents.push(e);
+                }
+            });
+
+            const timedEvents = [
+                ...dayEvents,
+                ...continuationEvents
+            ];
+
+            // All-Day Cell
+            const alldayCell = document.createElement('div');
+            alldayCell.className = 'week-allday-cell';
+            allDayEventsWithSpan.forEach(({ e, spanInfo }) => {
+                hasAnyAllDayEvents = true;
+                const pill = document.createElement('div');
+                pill.className = `week-allday-pill ${e.summary.startsWith('[x]') ? 'completed' : ''}`;
+                
+                const eventColor = getEventColor(e);
+                const textColor = getContrastTextColor(eventColor);
+                const dashColor = textColor === '#18181b' ? 'rgba(0, 0, 0, 0.45)' : 'rgba(255, 255, 255, 0.7)';
+                pill.style.setProperty('--dash-color', dashColor);
+                pill.style.background = eventColor;
+                pill.style.color = textColor;
+
+                if (spanInfo.isMultiDay) {
+                    if (spanInfo.isStartDay) {
+                        pill.classList.add('multi-day-start');
+                        pill.style.borderLeft = `3px solid ${eventColor}`;
+                    } else if (spanInfo.isEndDay) {
+                        pill.classList.add('multi-day-end');
+                    } else {
+                        pill.classList.add('multi-day-middle');
+                    }
+                } else {
+                    pill.style.borderLeft = `3px solid ${eventColor}`;
+                }
+                const cleanText = cleanDisplaySummary(e.summary, false);
+                let displayText = cleanText;
+                if (spanInfo.isMultiDay) {
+                    if (spanInfo.isStartDay) displayText = `${cleanText} →`;
+                    else if (spanInfo.isEndDay) displayText = `↩ ${cleanText}`;
+                    else displayText = `↩ ${cleanText} →`;
+                }
+                pill.innerText = displayText;
+                pill.title = `${cleanText}${spanInfo.isMultiDay ? ` (${spanInfo.startDate} ~ ${spanInfo.lastActiveDay})` : ''} • ${e.accountEmail || e.calendarName || ''}`;
+                pill.onclick = (ev) => {
+                    ev.stopPropagation();
+                    editingEvent = null;
+                    selectedDay = dateStr;
+                    openQuickAdd();
+                    document.querySelectorAll('.todo-title').forEach(item => {
+                        if (item.title === e.summary) item.click();
+                    });
+                };
+                alldayCell.appendChild(pill);
+            });
+            alldayCell.onclick = () => {
+                editingEvent = null;
+                selectedDay = dateStr;
+                openQuickAdd();
+                if (allDayCheck) { 
+                    allDayCheck.checked = true; 
+                    updateAllDayUI(); 
+                    if (eventStartDate) eventStartDate.value = dateStr;
+                    if (eventEndDate) eventEndDate.value = dateStr;
+                }
+            };
+            if (weekAlldayDays) weekAlldayDays.appendChild(alldayCell);
+
+            // Timeline Column
+            const col = document.createElement('div');
+            col.className = `week-day-column ${isToday ? 'today' : ''} ${(dOfWeek === 0 || dOfWeek === 6) ? 'weekend' : ''}`;
+
+            // Current Time Indicator on today's column
+            if (isToday) {
+                const nowMins = today.getHours() * 60 + today.getMinutes();
+                const indicatorTop = (nowMins / 60) * HOUR_HEIGHT;
+                const line = document.createElement('div');
+                line.className = 'week-current-time-line';
+                line.style.top = `${indicatorTop}px`;
+                const dot = document.createElement('div');
+                dot.className = 'week-current-time-dot';
+                line.appendChild(dot);
+                col.appendChild(line);
+            }
+
+            // Layout overlapping timed events (pass dateStr for cross-midnight handling)
+            const laidOut = layoutDayTimedEvents(timedEvents, HOUR_HEIGHT, dateStr);
+
+            laidOut.forEach(item => {
+                const e = item.event;
+                const card = document.createElement('div');
+                const isCompleted = e.summary.startsWith('[x]');
+                const isShort = item.height < 32;
+                card.className = `week-event-card ${isCompleted ? 'completed' : ''} ${isShort ? 'short-event' : ''} ${item.crossesMidnight ? 'crosses-midnight' : ''} ${item.isContinuation ? 'is-continuation' : ''}`;
+
+                let eventColor = getEventColor(e);
+
+                card.style.borderLeft = `3px solid ${eventColor}`;
+                card.style.background = `color-mix(in srgb, ${eventColor} 22%, rgba(255, 255, 255, 0.95))`;
+                card.style.borderColor = `color-mix(in srgb, ${eventColor} 45%, rgba(255,255,255,0.08))`;
+
+                card.style.top = `${item.top}px`;
+                card.style.height = `${item.height}px`;
+
+                const leftPct = (item.colIndex / item.totalCols) * 100;
+                const widthPct = (1 / item.totalCols) * 100;
+                card.style.left = `calc(${leftPct}% + 1px)`;
+                card.style.width = `calc(${widthPct}% - 2px)`;
+
+                const sDt = new Date(e.start.dateTime);
+                const sH = sDt.getHours().toString().padStart(2, '0');
+                const sM = sDt.getMinutes().toString().padStart(2, '0');
+                let timeStr = `${sH}:${sM}`;
+                if (e.end && e.end.dateTime) {
+                    const eDt = new Date(e.end.dateTime);
+                    const eH = eDt.getHours().toString().padStart(2, '0');
+                    const eM = eDt.getMinutes().toString().padStart(2, '0');
+                    timeStr += ` - ${eH}:${eM}`;
+                    if (item.crossesMidnight) timeStr += ' →';
+                }
+                const cleanText = cleanDisplaySummary(e.summary, true);
+                const displayTitle = item.isContinuation ? `↩ ${cleanText}` : cleanText;
+
+                card.innerHTML = `
+                    <span class="week-event-time">${timeStr}</span>
+                    <span class="week-event-title">${displayTitle}</span>
+                `;
+                card.title = `${timeStr} ${cleanText} • ${e.accountEmail || e.calendarName || ''}`;
+
+
+                card.onclick = (ev) => {
+                    ev.stopPropagation();
+                    editingEvent = null;
+                    selectedDay = dateStr;
+                    openQuickAdd();
+                    document.querySelectorAll('.todo-title').forEach(t => {
+                        if (t.title === e.summary) t.click();
+                    });
+                };
+
+                col.appendChild(card);
+            });
+
+            // Click empty space on column to add new event
+            col.onclick = (ev) => {
+                const rect = col.getBoundingClientRect();
+                const offsetY = ev.clientY - rect.top;
+                const clickedMins = (offsetY / HOUR_HEIGHT) * 60;
+                const snapMins = Math.floor(clickedMins / 30) * 30;
+                const clampedMins = Math.max(0, Math.min(23 * 60 + 30, snapMins));
+                const startH = Math.floor(clampedMins / 60);
+                const startM = clampedMins % 60;
+                const endH = (startH + 1) % 24;
+
+                const sTime = `${startH.toString().padStart(2, '0')}:${startM.toString().padStart(2, '0')}`;
+                const eTime = `${endH.toString().padStart(2, '0')}:${startM.toString().padStart(2, '0')}`;
+
+                editingEvent = null;
+                selectedDay = dateStr;
+                openQuickAdd();
+
+                if (eventStartTime) eventStartTime.value = sTime;
+                if (eventEndTime) eventEndTime.value = eTime;
+                if (allDayCheck) {
+                    allDayCheck.checked = false;
+                    updateAllDayUI();
+                }
+            };
+
+            // Task Drawer Drag & Drop to Week Column Slot
+            col.ondragover = (ev) => {
+                ev.preventDefault();
+                col.classList.add('drag-over-slot');
+            };
+            col.ondragleave = () => {
+                col.classList.remove('drag-over-slot');
+            };
+            col.ondrop = (ev) => {
+                ev.preventDefault();
+                col.classList.remove('drag-over-slot');
+                const taskData = ev.dataTransfer.getData('application/json');
+                if (!taskData) return;
+                try {
+                    const task = JSON.parse(taskData);
+                    const rect = col.getBoundingClientRect();
+                    const offsetY = ev.clientY - rect.top;
+                    const clickedMins = (offsetY / HOUR_HEIGHT) * 60;
+                    const snapMins = Math.floor(clickedMins / 30) * 30;
+                    const clampedMins = Math.max(0, Math.min(23 * 60 + 30, snapMins));
+                    const startH = Math.floor(clampedMins / 60);
+                    const startM = clampedMins % 60;
+                    const endH = (startH + 1) % 24;
+
+                    const sTime = `${startH.toString().padStart(2, '0')}:${startM.toString().padStart(2, '0')}`;
+                    const eTime = `${endH.toString().padStart(2, '0')}:${startM.toString().padStart(2, '0')}`;
+
+                    editingEvent = null;
+                    selectedDay = dateStr;
+                    openQuickAdd();
+
+                    if (quickAddInput) quickAddInput.value = task.title;
+                    if (eventStartTime) eventStartTime.value = sTime;
+                    if (eventEndTime) eventEndTime.value = eTime;
+                    if (allDayCheck) {
+                        allDayCheck.checked = false;
+                        updateAllDayUI();
+                    }
+                } catch (_e) {}
+            };
+
+            weekDaysColumns.appendChild(col);
+        }
+
+        if (!hasAnyAllDayEvents) {
+            weekAlldayRow.style.display = 'none';
+        } else {
+            weekAlldayRow.style.display = 'flex';
+        }
+
+        scrollToSmartHour();
+    }
+
+    function addDayCell(year, month, day, isOtherMonth, isToday, isWeekView = false) {
+        const dateObj = new Date(year, month, day);
+        const dayOfWeek = dateObj.getDay();
+        const y = dateObj.getFullYear(), m = (dateObj.getMonth() + 1).toString().padStart(2, '0'), d = dateObj.getDate().toString().padStart(2, '0');
+        const dateStr = `${y}-${m}-${d}`;
+        const cell = document.createElement('div');
+        cell.classList.add('day-cell');
+        if (isOtherMonth) cell.classList.add('other-month');
+        if (isToday) cell.classList.add('today');
+        if (dayOfWeek === 0) cell.classList.add('sunday');
+        if (dayOfWeek === 6) cell.classList.add('saturday');
+        if (dayOfWeek === 0 || dayOfWeek === 6) cell.classList.add('weekend');
+
+        cell.innerHTML = `<span class="day-number">${day}</span><div class="events-container"></div>`;
+
+        // 1. Gather all events active on this date (including multi-day all-day & timed continuations)
+        const combinedEvents = [];
+        events.forEach(e => {
+            const spanInfo = getEventDaySpanInfo(e, dateStr);
+            if (!spanInfo) return;
+            combinedEvents.push({ e, spanInfo, isContinuation: spanInfo.isContinuation });
+        });
+
+        // 2. Sort: all-day first, then timed chronologically
+        combinedEvents.sort((a, b) => {
+            const aIsAllDay = a.spanInfo.isAllDay;
+            const bIsAllDay = b.spanInfo.isAllDay;
+            if (aIsAllDay && !bIsAllDay) return -1;
+            if (!aIsAllDay && bIsAllDay) return 1;
+            if (aIsAllDay && bIsAllDay) return 0;
+
+            const aMins = a.isContinuation ? 0 : (new Date(a.e.start.dateTime).getHours() * 60 + new Date(a.e.start.dateTime).getMinutes());
+            const bMins = b.isContinuation ? 0 : (new Date(b.e.start.dateTime).getHours() * 60 + new Date(b.e.start.dateTime).getMinutes());
+            return aMins - bMins;
+        });
+
+        const eventsContainer = cell.querySelector('.events-container');
+        let cellHighlightColor = null;
+
+        // Pre-scan for highlight tag
+        combinedEvents.forEach(({ e }) => {
+            if (e.summary && e.summary.includes('[HIGHLIGHT]')) {
+                cellHighlightColor = getEventColor(e);
+            }
+        });
+
+        const maxEvents = isWeekView ? 25 : 3;
+        combinedEvents.slice(0, maxEvents).forEach(({ e, spanInfo, isContinuation }) => {
+            const ev = document.createElement('div');
+            ev.classList.add('event-item');
+            
+            // Check if completed
+            const isCompleted = e.summary && e.summary.startsWith('[x]');
+            if (isCompleted) {
+                ev.classList.add('completed-event');
+            }
+
+            let displaySummary = e.summary || '';
+            if (displaySummary.includes('[IMPORTANT]')) {
+                ev.classList.add('important-event');
+                displaySummary = displaySummary.replace('[IMPORTANT]', '⭐');
+            }
+            
+            if (displaySummary.includes('[HIGHLIGHT]')) {
+                displaySummary = displaySummary.replace('[HIGHLIGHT]', '');
+            }
+
+            const eventColor = getEventColor(e);
+            const textColor = getContrastTextColor(eventColor);
+            const dashColor = textColor === '#18181b' ? 'rgba(0, 0, 0, 0.45)' : 'rgba(255, 255, 255, 0.7)';
+            ev.style.setProperty('--dash-color', dashColor);
+
+            const hasCustomColor = !!(e.eventLabelId) || !!(e.colorId && GOOGLE_COLORS[e.colorId]) || !!(e.summary && e.summary.match(/\[COLOR:(#[0-9a-fA-F]{3,6})\]/));
+            if (hasCustomColor && !cellHighlightColor) {
+                ev.style.background = eventColor;
+                ev.style.color = textColor;
+                ev.style.textShadow = textColor === '#ffffff' ? '0 1px 2px rgba(0, 0, 0, 0.5)' : 'none';
+                if (textColor !== '#ffffff') {
+                    ev.style.fontWeight = '600';
+                }
+            }
+            if (displaySummary.includes('[COLOR:')) {
+                displaySummary = displaySummary.replace(/\[COLOR:#[0-9a-fA-F]{3,6}\]/g, '');
+            }
+            
+            const hasTime = !!(e.start && e.start.dateTime);
+            let timePrefix = '';
+            let timeInfo = null;
+            let crossesMidnight = false;
+
+            if (hasTime) {
+                const startDt = new Date(e.start.dateTime);
+                const sH = startDt.getHours().toString().padStart(2, '0');
+                const sM = startDt.getMinutes().toString().padStart(2, '0');
+                const startTimeStr = `${sH}:${sM}`;
+                timePrefix = `${startTimeStr} `;
+
+                let endTimeStr = null;
+                let durationStr = null;
+                if (e.end && e.end.dateTime) {
+                    const endDt = new Date(e.end.dateTime);
+                    const eH = endDt.getHours().toString().padStart(2, '0');
+                    const eM = endDt.getMinutes().toString().padStart(2, '0');
+                    endTimeStr = `${eH}:${eM}`;
+
+                    const startDayStr = localDateStr(startDt);
+                    const endDayStr   = localDateStr(endDt);
+                    crossesMidnight   = (!isContinuation && startDayStr === dateStr && endDayStr !== dateStr);
+
+                    const diffMin = Math.round((endDt - startDt) / 60000);
+                    if (diffMin > 0) {
+                        if (diffMin < 60) durationStr = `${diffMin} dk`;
+                        else if (diffMin % 60 === 0) durationStr = `${diffMin / 60} sa`;
+                        else durationStr = `${(diffMin / 60).toFixed(1).replace(/\.0$/, '')} sa`;
+                    }
+                }
+                timeInfo = { startTimeStr, endTimeStr, durationStr };
+            }
+            
+            const cleanText = cleanDisplaySummary(displaySummary, hasTime);
+
+            if (spanInfo.isMultiDay) {
+                if (spanInfo.isStartDay) {
+                    ev.classList.add('multi-day-start');
+                } else if (spanInfo.isEndDay) {
+                    ev.classList.add('multi-day-end');
+                } else {
+                    ev.classList.add('multi-day-middle');
+                }
+            } else if (isContinuation) {
+                ev.classList.add('is-continuation');
+            } else if (crossesMidnight) {
+                ev.classList.add('crosses-midnight');
+            }
+
+            if (spanInfo.isMultiDay) {
+                let allDayText;
+                if (spanInfo.isStartDay) allDayText = `${cleanText} →`;
+                else if (spanInfo.isEndDay) allDayText = `↩ ${cleanText}`;
+                else allDayText = `↩ ${cleanText} →`;
+                ev.innerHTML = `<div class="event-title-text">${allDayText}</div>`;
+            } else if (timeDisplayStyle === 'badge' && timeInfo) {
+                let rangeText = timeInfo.endTimeStr ? `${timeInfo.startTimeStr} ~ ${timeInfo.endTimeStr}` : timeInfo.startTimeStr;
+                if (crossesMidnight) {
+                    rangeText = `${timeInfo.startTimeStr} ~ ${timeInfo.endTimeStr} →`;
+                } else if (isContinuation) {
+                    rangeText = `~ ${timeInfo.endTimeStr} ↩`;
+                }
+                ev.innerHTML = `<div class="event-time-micro">${rangeText}</div><div class="event-title-text">${cleanText}</div>`;
+            } else if (timeDisplayStyle === 'duration' && timeInfo) {
+                const durTag = timeInfo.durationStr ? `<span class="event-duration-tag">(${timeInfo.durationStr})</span>` : '';
+                let timeStr = `${timeInfo.startTimeStr} `;
+                if (crossesMidnight) timeStr = `${timeInfo.startTimeStr} → `;
+                else if (isContinuation) timeStr = `~ ${timeInfo.endTimeStr} ↩ `;
+                ev.innerHTML = `<div class="event-title-text"><span class="event-time-str">${timeStr}</span>${durTag}${cleanText}</div>`;
+            } else {
+                let prefix = timePrefix;
+                if (crossesMidnight) prefix = `${timePrefix.trim()} → `;
+                else if (isContinuation) prefix = `~ ${timeInfo?.endTimeStr || ''} ↩ `;
+                ev.innerHTML = `<div class="event-title-text">${prefix}${cleanText}</div>`;
+            }
+
+            const tooltipTime = timeInfo ? (timeInfo.endTimeStr ? `${timeInfo.startTimeStr} - ${timeInfo.endTimeStr} ` : `${timeInfo.startTimeStr} `) : '';
+            const tooltipSpan = (spanInfo.isAllDay && spanInfo.isMultiDay) ? ` (${spanInfo.startDate} ~ ${spanInfo.lastActiveDay})` : '';
+            ev.title = `${tooltipTime}${cleanText}${tooltipSpan} • ${e.accountEmail || e.calendarName || ''}`;
+
+            if (spanInfo.isMultiDay) {
+                if (spanInfo.isStartDay) {
+                    ev.style.borderLeft = `3px solid ${eventColor}`;
+                }
+                // Middle and End days have dashed left border applied via CSS
+            } else if (isContinuation) {
+                ev.style.borderLeft = `2.5px dashed var(--dash-color, rgba(255, 255, 255, 0.65))`;
+            } else {
+                ev.style.borderLeft = `3px solid ${eventColor}`;
+            }
+
+            ev.onclick = (event) => { 
+                event.stopPropagation(); 
+                editingEvent = null; 
+                selectedDay = dateStr; 
+                openQuickAdd(); 
+                
+                // Automatically trigger the edit mode for this specific clicked event
+                const todoItems = document.querySelectorAll('.todo-title');
+                todoItems.forEach(item => {
+                    if (item.title === e.summary) {
+                        item.click();
+                    }
+                });
+            };
+            eventsContainer.appendChild(ev);
+        });
+
+        if (cellHighlightColor) {
+            cell.style.background = `linear-gradient(135deg, ${cellHighlightColor}33 0%, ${cellHighlightColor}11 100%)`;
+            cell.style.borderColor = cellHighlightColor;
+        }
+
+        // Task Drawer Drag & Drop to Day Cell
+        cell.ondragover = (ev) => {
+            ev.preventDefault();
+            cell.classList.add('drag-over-cell');
+        };
+        cell.ondragleave = () => {
+            cell.classList.remove('drag-over-cell');
+        };
+        cell.ondrop = (ev) => {
+            ev.preventDefault();
+            cell.classList.remove('drag-over-cell');
+            const taskData = ev.dataTransfer.getData('application/json');
+            if (!taskData) return;
+            try {
+                const task = JSON.parse(taskData);
+                selectedDay = dateStr;
+                editingEvent = null;
+                openQuickAdd();
+                if (quickAddInput) quickAddInput.value = task.title;
+                if (allDayCheck) {
+                    allDayCheck.checked = true;
+                    updateAllDayUI();
+                }
+            } catch (_e) {}
+        };
+
+        cell.onclick = () => { 
+            editingEvent = null; 
+            selectedDay = dateStr; 
+            openQuickAdd(); 
+        };
+        calendarDays.appendChild(cell);
+    }
+
+    let fetchRequestId = 0;
+    let fetchDebounceTimer = null;
+    function debouncedFetchEvents(delay = 250) {
+        if (fetchDebounceTimer) {
+            clearTimeout(fetchDebounceTimer);
+        }
+        fetchDebounceTimer = setTimeout(() => {
+            fetchDebounceTimer = null;
+            fetchEvents();
+        }, delay);
+    }
+
+    async function fetchEvents() {
+        if (syncTimer) {
+            clearTimeout(syncTimer);
+            syncTimer = null;
+        }
+
+        const currentReqId = ++fetchRequestId;
+
+        if (syncIndicator) {
+            syncIndicator.innerText = 'Senkronize ediliyor...';
+            syncIndicator.classList.remove('hidden', 'error');
+        }
+        
+        const timeMin = new Date(currentViewDate.getFullYear(), currentViewDate.getMonth() - 1, 1).toISOString();
+        const timeMax = new Date(currentViewDate.getFullYear(), currentViewDate.getMonth() + 2, 0).toISOString();
+        
+        try {
+            const fetchedEvents = await ipcRenderer.invoke('get-events', { 
+                timeMin, 
+                timeMax, 
+                selectedCalendarIds 
+            });
+            if (currentReqId !== fetchRequestId) return;
+            events = fetchedEvents;
+            lastSyncTime = Date.now();
+            errorCount = 0;
+            if (syncIndicator) {
+                syncIndicator.classList.add('hidden');
+                syncIndicator.onclick = null;
+                syncIndicator.style.cursor = 'default';
+            }
+            scheduleNextSync(NORMAL_SYNC_INTERVAL);
+        } catch (err) { 
+            if (currentReqId !== fetchRequestId) return;
+            console.error('Fetch error:', err);
+            if (syncIndicator) {
+                syncIndicator.innerText = 'Senkronizasyon başarısız (giriş için tıkla)';
+                syncIndicator.classList.add('error');
+                syncIndicator.classList.remove('hidden');
+                syncIndicator.style.cursor = 'pointer';
+                syncIndicator.onclick = () => ipcRenderer.invoke('reset-auth');
+            }
+            
+            const delay = BACKOFF_DELAYS[Math.min(errorCount, BACKOFF_DELAYS.length - 1)];
+            errorCount++;
+            console.log(`Sync failed. Retrying in ${delay / 1000} seconds...`);
+            scheduleNextSync(delay);
+        } finally {
+            if (currentReqId === fetchRequestId) {
+                renderCalendar();
+                // Refresh todo modal if it is currently open
+                if (quickAddModal && !quickAddModal.classList.contains('hidden')) {
+                    updateTodoListUI();
+                }
+            }
+        }
+    }
+
+    function openQuickAdd() {
+        isEndTimeUserModified = false;
+        if (quickAddModal) quickAddModal.classList.remove('hidden');
+        if (todoDateTitle) {
+            const dateParts = selectedDay.split('-');
+            const formattedDate = new Date(dateParts[0], dateParts[1] - 1, dateParts[2])
+                .toLocaleDateString('tr-TR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+            todoDateTitle.innerText = formattedDate;
+        }
+        
+        updateTodoListUI();
+
+        if (quickAddInput) { quickAddInput.value = ''; quickAddInput.focus(); }
+        if (eventStartDate) eventStartDate.value = selectedDay || localDateStr(new Date());
+        if (eventEndDate) eventEndDate.value = eventStartDate ? eventStartDate.value : (selectedDay || localDateStr(new Date()));
+        if (allDayCheck) {
+            allDayCheck.checked = false;
+            updateAllDayUI();
+        }
+        if (document.getElementById('important-check')) document.getElementById('important-check').checked = false;
+        if (document.getElementById('highlight-cell-check')) document.getElementById('highlight-cell-check').checked = false;
+        if (document.getElementById('selected-entry-color')) document.getElementById('selected-entry-color').value = 'default';
+        document.querySelectorAll('.color-opt').forEach(opt => opt.classList.remove('active'));
+        document.getElementById('default-color-btn')?.classList.add('active');
+        if (extraFields) extraFields.classList.remove('hidden');
+    }
+
+    function updateTodoListUI() {
+        if (!todoListContainer) return;
+        todoListContainer.innerHTML = '';
+
+        // Filter events for the selected day (including multi-day events)
+        const dayEvents = events.filter(e => {
+            const isReadOnly = e.accessRole === 'reader' || e.accessRole === 'freeBusyReader';
+            return isEventOnDate(e, selectedDay) && !isReadOnly;
+        });
+
+        if (dayEvents.length === 0) {
+            todoListContainer.innerHTML = `<div style="font-size: 0.85rem; opacity: 0.4; padding: 16px; text-align: center;">Bu gün için görev yok.</div>`;
+            return;
+        }
+
+        dayEvents.forEach(e => {
+            const isCompleted = e.summary.startsWith('[x]');
+            const hasTime = !!(e.start && e.start.dateTime);
+            const cleanText = cleanDisplaySummary(e.summary, hasTime);
+            
+            const item = document.createElement('div');
+            item.classList.add('todo-item');
+
+            const itemLeft = document.createElement('div');
+            itemLeft.classList.add('todo-item-left');
+
+            const checkbox = document.createElement('div');
+            checkbox.className = `todo-checkbox ${isCompleted ? 'checked' : ''}`;
+            checkbox.onclick = (event) => {
+                event.stopPropagation();
+                toggleTodoStatus(e);
+            };
+            itemLeft.appendChild(checkbox);
+
+            const contentCol = document.createElement('div');
+            contentCol.className = 'todo-content-col';
+
+            const title = document.createElement('span');
+            title.className = `todo-title ${isCompleted ? 'completed' : ''}`;
+            title.innerText = cleanText;
+            title.title = e.summary;
+            
+            contentCol.onclick = (event) => {
+                event.stopPropagation();
+                editingEvent = e;
+                const spanInfo = getEventDaySpanInfo(e, selectedDay);
+                if (spanInfo && spanInfo.startDate) {
+                    selectedDay = spanInfo.startDate;
+                } else if (e.start && (e.start.dateTime || e.start.date)) {
+                    selectedDay = (e.start.dateTime || e.start.date).split('T')[0];
+                }
+                
+                // Populate text input
+                if (quickAddInput) {
+                    quickAddInput.value = cleanText;
+                    quickAddInput.focus();
+                }
+
+                // Populate date range
+                if (eventStartDate) eventStartDate.value = spanInfo ? spanInfo.startDate : selectedDay;
+                if (eventEndDate) eventEndDate.value = spanInfo ? spanInfo.lastActiveDay : selectedDay;
+
+                // Populate time / all-day status
+                const isAllDay = !e.start.dateTime;
+                if (allDayCheck) {
+                    allDayCheck.checked = isAllDay;
+                    updateAllDayUI();
+                }
+                if (isAllDay) {
+                    if (eventStartTime) eventStartTime.value = '';
+                    if (eventEndTime) eventEndTime.value = '';
+                    isEndTimeUserModified = false;
+                } else {
+                    if (e.start.dateTime) {
+                        const startDt = new Date(e.start.dateTime);
+                        const sH = startDt.getHours().toString().padStart(2, '0');
+                        const sM = startDt.getMinutes().toString().padStart(2, '0');
+                        if (eventStartTime) eventStartTime.value = `${sH}:${sM}`;
+
+                        if (e.end && e.end.dateTime) {
+                            const endDt = new Date(e.end.dateTime);
+                            const eH = endDt.getHours().toString().padStart(2, '0');
+                            const eM = endDt.getMinutes().toString().padStart(2, '0');
+                            if (eventEndTime) eventEndTime.value = `${eH}:${eM}`;
+                            isEndTimeUserModified = true;
+                        } else if (eventEndTime) {
+                            eventEndTime.value = '';
+                            isEndTimeUserModified = false;
+                        }
+                    } else {
+                        if (eventStartTime) eventStartTime.value = '';
+                        if (eventEndTime) eventEndTime.value = '';
+                        isEndTimeUserModified = false;
+                    }
+                }
+                
+                // Populate extra options
+                if (eventLocationInput) eventLocationInput.value = e.location || '';
+                if (eventDescriptionInput) eventDescriptionInput.value = e.description || '';
+                if (document.getElementById('important-check')) document.getElementById('important-check').checked = e.summary.includes('[IMPORTANT]');
+                if (document.getElementById('highlight-cell-check')) document.getElementById('highlight-cell-check').checked = e.summary.includes('[HIGHLIGHT]');
+                
+                // Populate color selection
+                let selectedHex = 'default';
+                if (e.eventLabelId) {
+                    selectedHex = findLabelHex(e.eventLabelId) || 'default';
+                } else if (e.colorId && GOOGLE_COLORS[e.colorId]) {
+                    selectedHex = GOOGLE_COLORS[e.colorId].bg;
+                } else if (e.summary) {
+                    const colorMatch = e.summary.match(/\[COLOR:(#[0-9a-fA-F]{3,6})\]/);
+                    if (colorMatch) selectedHex = colorMatch[1].toLowerCase();
+                }
+                if (document.getElementById('selected-entry-color')) document.getElementById('selected-entry-color').value = selectedHex;
+                if (selectedHex === 'default') {
+                    document.querySelectorAll('.color-opt').forEach(opt => opt.classList.remove('active'));
+                    document.getElementById('default-color-btn')?.classList.add('active');
+                } else {
+                    document.getElementById('default-color-btn')?.classList.remove('active');
+                    let matched = false;
+                    document.querySelectorAll('.color-opt').forEach(opt => {
+                        const optHex = opt.getAttribute('data-color')?.toLowerCase();
+                        if (!matched && optHex === selectedHex.toLowerCase()) {
+                            opt.classList.add('active');
+                            matched = true;
+                        } else {
+                            opt.classList.remove('active');
+                        }
+                    });
+                }
+
+                // Auto-show More Options when editing
+                if (extraFields) extraFields.classList.remove('hidden');
+                if (toggleExtraBtn) toggleExtraBtn.classList.add('hidden');
+            };
+
+            contentCol.appendChild(title);
+
+            const metaRow = document.createElement('div');
+            metaRow.className = 'todo-meta-row';
+            let hasMeta = false;
+
+            // Time badge tag if event has start time
+            if (e.start && e.start.dateTime) {
+                const timeTag = document.createElement('span');
+                timeTag.className = 'todo-time-tag';
+                const startDt = new Date(e.start.dateTime);
+                const sH = startDt.getHours().toString().padStart(2, '0');
+                const sM = startDt.getMinutes().toString().padStart(2, '0');
+                let timeText = `${sH}:${sM}`;
+                if (e.end && e.end.dateTime) {
+                    const endDt = new Date(e.end.dateTime);
+                    const eH = endDt.getHours().toString().padStart(2, '0');
+                    const eM = endDt.getMinutes().toString().padStart(2, '0');
+                    if (`${sH}:${sM}` !== `${eH}:${eM}`) {
+                        timeText += ` - ${eH}:${eM}`;
+                    }
+                }
+                timeTag.innerText = timeText;
+                metaRow.appendChild(timeTag);
+                hasMeta = true;
+            } else {
+                const spanInfo = getEventDaySpanInfo(e, selectedDay);
+                if (spanInfo && spanInfo.isMultiDay) {
+                    const dateTag = document.createElement('span');
+                    dateTag.className = 'todo-time-tag';
+                    const sParts = spanInfo.startDate.split('-');
+                    const eParts = spanInfo.lastActiveDay.split('-');
+                    dateTag.innerText = `${parseInt(sParts[1])}/${parseInt(sParts[2])} ~ ${parseInt(eParts[1])}/${parseInt(eParts[2])}`;
+                    metaRow.appendChild(dateTag);
+                    hasMeta = true;
+                }
+            }
+
+            // Account badge tag
+            if (e.accountEmail || e.calendarName) {
+                const accountTag = document.createElement('span');
+                accountTag.className = 'todo-account-tag';
+                const shortAccount = e.accountEmail ? e.accountEmail.split('@')[0] : (e.calendarName || '');
+                accountTag.innerText = shortAccount;
+                accountTag.title = `${e.accountEmail || ''} (${e.calendarName || ''})`;
+                accountTag.style.background = `${e.backgroundColor || 'var(--accent-color)'}26`;
+                accountTag.style.color = e.backgroundColor || 'var(--accent-color)';
+                accountTag.style.border = `1px solid ${e.backgroundColor || 'var(--accent-color)'}40`;
+                metaRow.appendChild(accountTag);
+                hasMeta = true;
+            }
+
+            // Meeting join button (Google Meet or other conference link)
+            const meetUrl = e.hangoutLink ||
+                e.conferenceData?.entryPoints?.find(ep => ep.entryPointType === 'video')?.uri;
+            if (meetUrl) {
+                const joinBtn = document.createElement('button');
+                joinBtn.className = 'todo-join-btn';
+                joinBtn.innerText = '📹 Join';
+                joinBtn.title = `Toplantıya katıl: ${meetUrl}`;
+                joinBtn.onclick = (event) => {
+                    event.stopPropagation();
+                    shell.openExternal(meetUrl);
+                };
+                metaRow.appendChild(joinBtn);
+                hasMeta = true;
+            }
+
+            if (hasMeta) {
+                contentCol.appendChild(metaRow);
+            }
+
+            itemLeft.appendChild(contentCol);
+            item.appendChild(itemLeft);
+            
+            const deleteBtn = document.createElement('button');
+            deleteBtn.classList.add('todo-delete-btn');
+            deleteBtn.innerText = '✕';
+            deleteBtn.title = 'Sil';
+            deleteBtn.onclick = async (event) => {
+                event.stopPropagation();
+                item.style.opacity = '0.3';
+                // Clear input and editingEvent immediately so that clicking outside
+                // after deletion does NOT trigger saveCurrentEvent() and recreate the entry.
+                if (quickAddInput) quickAddInput.value = '';
+                editingEvent = null;
+                await ipcRenderer.invoke('delete-event', { calendarId: e.calendarId, eventId: e.id, accountEmail: e.accountEmail });
+                fetchEvents();
+            };
+            item.appendChild(deleteBtn);
+
+            todoListContainer.appendChild(item);
+        });
+    }
+
+    async function toggleTodoStatus(eventItem) {
+        const isCompleted = eventItem.summary.startsWith('[x]');
+        let newSummary;
+        if (isCompleted) {
+            newSummary = eventItem.summary.replace(/^\[x\]\s*/, '');
+        } else {
+            newSummary = '[x] ' + eventItem.summary.replace(/^\[ \]\s*/, '');
+        }
+
+        // 1. Play immediate sound feedback (Clean 8bit chime synthezised on the fly)
+        playChimeSound(!isCompleted);
+
+        // 2. Perform Optimistic UI Update locally
+        eventItem.summary = newSummary; // Mutate local state directly for 0ms delay
+        updateTodoListUI();
+        renderCalendar();
+
+        // 3. Smart Task Drawer Sync
+        // When checking an event, if all calendar sessions for this task are completed, mark task Done.
+        // If unchecking an event, revert matching task to Active.
+        try {
+            const hasTime = !!(eventItem.start && eventItem.start.dateTime);
+            const cleanText = cleanDisplaySummary(newSummary, hasTime).trim();
+            const matchingTask = localTasks.find(t => t.title.trim().toLowerCase() === cleanText.toLowerCase());
+
+            if (matchingTask) {
+                if (!isCompleted) {
+                    // Event was just checked. Check if any OTHER calendar events for this task are still uncompleted.
+                    const otherIncompleteEvents = events.filter(e => {
+                        if (e.id === eventItem.id) return false;
+                        const eHasTime = !!(e.start && e.start.dateTime);
+                        const eClean = cleanDisplaySummary(e.summary, eHasTime).trim();
+                        const eIsIncomplete = !e.summary.startsWith('[x]');
+                        return eClean.toLowerCase() === cleanText.toLowerCase() && eIsIncomplete;
+                    });
+
+                    if (otherIncompleteEvents.length === 0) {
+                        matchingTask.status = 'completed';
+                        saveLocalTasks();
+                    }
+                } else {
+                    // Event was just unchecked. Revert task to Active.
+                    if (matchingTask.status === 'completed') {
+                        matchingTask.status = 'needsAction';
+                        saveLocalTasks();
+                    }
+                }
+            }
+        } catch (syncErr) {
+            console.error('Error syncing calendar event completion to task drawer:', syncErr);
+        }
+        
+        const eventData = {
+            summary: newSummary,
+            start: eventItem.start,
+            end: eventItem.end,
+            location: eventItem.location,
+            description: eventItem.description
+        };
+
+        try {
+            await ipcRenderer.invoke('update-event', { 
+                calendarId: eventItem.calendarId, 
+                eventId: eventItem.id, 
+                eventData,
+                accountEmail: eventItem.accountEmail
+            });
+            fetchEvents(); // Background sync to ensure data is correct
+        } catch (err) {
+            console.error('Failed to toggle todo status:', err);
+            // Revert changes if API fails
+            fetchEvents();
+        }
+    }
+
+
+    async function saveCurrentEvent() {
+        const summary = quickAddInput ? stripTags(quickAddInput.value) : '';
+        if (!summary) return;
+        
+        let startStr = eventStartTime && eventStartTime.value ? eventStartTime.value : null;
+        let endStr = eventEndTime && eventEndTime.value ? eventEndTime.value : null;
+
+        // Fallback: parse from input text if not explicitly set in picker
+        if (!startStr) {
+            const durationMatch = summary.match(/(?:^|\s)(\d{1,2}:?\d{2})\s*(?:[~-]|to)\s*(\d{1,2}:?\d{2})(?:\s|$)/i);
+            const singleTimeMatch = summary.match(/(?:^|\s)(\d{1,2}:?\d{2})(?:\s|$)/);
+            function formatPart(t) {
+                if (t.includes(':')) return t.padStart(5, '0');
+                if (t.length === 3) return `0${t[0]}:${t.slice(1)}`;
+                if (t.length === 4) return `${t.slice(0, 2)}:${t.slice(2)}`;
+                return t;
+            }
+            if (durationMatch) { startStr = formatPart(durationMatch[1]); endStr = formatPart(durationMatch[2]); }
+            else if (singleTimeMatch) { startStr = formatPart(singleTimeMatch[1]); }
+        }
+
+        const sDateVal = (eventStartDate && eventStartDate.value) ? eventStartDate.value : selectedDay;
+        let eDateVal = (eventEndDate && eventEndDate.value) ? eventEndDate.value : sDateVal;
+        if (eDateVal < sDateVal) eDateVal = sDateVal;
+
+        // Multi-day events are strictly All-day (consistent with Google Calendar)
+        const isMultiDay = (sDateVal !== eDateVal);
+        const isAllDayState = isMultiDay || (allDayCheck ? allDayCheck.checked : (!startStr));
+        const offset = getLocalTZOffset();
+        let start, end;
+
+        if (!isAllDayState && startStr) {
+            start = { dateTime: `${sDateVal}T${startStr}:00${offset}` };
+            if (endStr) {
+                const [sh, sm] = startStr.split(':').map(Number);
+                const [eh, em] = endStr.split(':').map(Number);
+                const crossesMidnight = (eh * 60 + em) <= (sh * 60 + sm) && (sDateVal === eDateVal);
+                let endDay = eDateVal;
+                if (crossesMidnight) {
+                    const d = new Date(sDateVal);
+                    d.setDate(d.getDate() + 1);
+                    endDay = localDateStr(d);
+                }
+                end = { dateTime: `${endDay}T${endStr}:00${offset}` };
+            } else {
+                const [h, m] = startStr.split(':').map(Number);
+                const endH = (h + 1) % 24;
+                const endDay = (endH === 0 && sDateVal === eDateVal) ? (() => {
+                    const d = new Date(sDateVal);
+                    d.setDate(d.getDate() + 1);
+                    return localDateStr(d);
+                })() : eDateVal;
+                end = { dateTime: `${endDay}T${endH.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:00${offset}` };
+            }
+
+        } else {
+            const eParts = eDateVal.split('-').map(Number);
+            const eD = new Date(eParts[0], eParts[1] - 1, eParts[2]);
+            eD.setDate(eD.getDate() + 1);
+            const exclusiveEndDateStr = localDateStr(eD);
+
+            start = { date: sDateVal };
+            end = { date: exclusiveEndDateStr };
+        }
+
+        const location = eventLocationInput ? eventLocationInput.value : '';
+        const description = eventDescriptionInput ? eventDescriptionInput.value : '';
+        const isImportant = document.getElementById('important-check')?.checked;
+        const isHighlighted = document.getElementById('highlight-cell-check')?.checked;
+        const entryColor = document.getElementById('selected-entry-color')?.value;
+        let colorId = null;
+        let eventLabelId = null;
+        if (entryColor && entryColor !== 'default') {
+            if (entryColor.startsWith('#')) {
+                const hex = entryColor.toLowerCase();
+                eventLabelId = findLabelId(hex);
+                colorId = HEX_TO_COLOR_ID[hex] || null;
+            } else if (GOOGLE_COLORS[entryColor]) {
+                colorId = entryColor;
+            }
+        }
+        
+        let finalSummary = summary;
+        if (!isAllDayState && startStr) {
+            finalSummary = cleanDisplaySummary(summary, true);
+        }
+        
+        // Preserve [x] prefix if it was previously completed
+        if (editingEvent && editingEvent.summary.startsWith('[x]')) {
+            finalSummary = '[x] ' + finalSummary;
+        }
+        
+        if (isImportant) finalSummary += ' [IMPORTANT]';
+        if (isHighlighted) finalSummary += ' [HIGHLIGHT]';
+        // Note: No longer append [COLOR:...] to finalSummary so Google Calendar title stays clean!
+        
+        const eventData = { 
+            summary: finalSummary, 
+            start, 
+            end, 
+            location, 
+            description 
+        };
+
+        if (eventLabelId) {
+            eventData.eventLabelId = eventLabelId;
+        } else if (editingEvent && editingEvent.eventLabelId && entryColor === 'default') {
+            eventData.eventLabelId = null;
+        }
+
+        if (colorId) {
+            eventData.colorId = colorId;
+        } else if (editingEvent && (editingEvent.colorId || editingEvent.summary?.includes('[COLOR:')) && entryColor === 'default') {
+            eventData.colorId = null;
+        }
+
+        // Preserve editing event copy
+        const currentEditEvent = editingEvent;
+
+        // Reset inputs immediately for responsive UX
+        quickAddInput.value = '';
+        if (eventLocationInput) eventLocationInput.value = '';
+        if (eventDescriptionInput) eventDescriptionInput.value = '';
+        if (allDayCheck) {
+            allDayCheck.checked = false;
+            if (eventStartTime) eventStartTime.value = '';
+            if (eventEndTime) eventEndTime.value = '';
+            if (eventStartDate) eventStartDate.value = '';
+            if (eventEndDate) eventEndDate.value = '';
+            updateAllDayUI();
+        }
+        if (document.getElementById('important-check')) document.getElementById('important-check').checked = false;
+        if (document.getElementById('highlight-cell-check')) document.getElementById('highlight-cell-check').checked = false;
+        if (document.getElementById('selected-entry-color')) document.getElementById('selected-entry-color').value = 'default';
+        document.querySelectorAll('.color-opt').forEach(opt => opt.classList.remove('active'));
+        document.getElementById('default-color-btn')?.classList.add('active');
+        isEndTimeUserModified = false;
+        editingEvent = null;
+
+        try {
+            if (currentEditEvent) {
+                await ipcRenderer.invoke('update-event', { 
+                    calendarId: currentEditEvent.calendarId, 
+                    eventId: currentEditEvent.id, 
+                    eventData,
+                    accountEmail: currentEditEvent.accountEmail
+                });
+            } else {
+                await ipcRenderer.invoke('create-event', eventData);
+            }
+        } catch (err) {
+            console.error('Failed to save event:', err);
+        }
+        
+        fetchEvents();
+    }
+
+    if (quickAddInput) {
+        quickAddInput.onkeydown = async (e) => {
+            if (e.key === 'Enter') {
+                await saveCurrentEvent();
+            } else if (e.key === 'Escape') {
+                closeAllModals();
+            }
+        };
+    }
+
+    if (saveEventBtn) {
+        saveEventBtn.onclick = async () => {
+            await saveCurrentEvent();
+        };
+    }
+
+    function _showEventDetails(event) {
+        editingEvent = event;
+        const titleEl = document.getElementById('popup-title'), timeEl = document.getElementById('popup-time'), calEl = document.getElementById('popup-calendar'), calColorEl = document.getElementById('popup-calendar-color'), descEl = document.getElementById('popup-description');
+        if (titleEl) titleEl.innerText = stripTags(event.summary);
+        const start = new Date(event.start.dateTime || event.start.date), end = new Date(event.end.dateTime || event.end.date);
+        let timeStr = start.toLocaleString('tr-TR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        if (event.end && (event.end.dateTime || event.end.date)) { if (!event.start.date) timeStr += ` - ${end.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}`; else timeStr = start.toLocaleDateString('tr-TR', { month: 'short', day: 'numeric' }) + ' (Tüm gün)'; }
+        if (timeEl) timeEl.innerText = timeStr;
+        if (calEl) calEl.innerText = event.calendarName || '';
+        if (calColorEl) calColorEl.style.backgroundColor = event.backgroundColor || 'var(--accent-color)';
+
+        if (descEl) {
+            let description = event.description || '';
+            const tempDiv = document.createElement('div'); tempDiv.innerHTML = description;
+            
+            const existingLinks = tempDiv.querySelectorAll('a');
+            existingLinks.forEach(a => { 
+                const url = a.href; 
+                a.style.cursor = 'pointer'; 
+                a.style.color = 'var(--accent-color)'; 
+                a.setAttribute('onclick', `require('electron').shell.openExternal('${url}'); return false;`);
+                a.removeAttribute('href'); 
+            });
+
+            if (existingLinks.length === 0) {
+                let text = tempDiv.innerText; const urlRegex = /(https?:\/\/[^\s]+)/g;
+                descEl.innerHTML = text.replace(urlRegex, (u) => { 
+                    const c = u.replace(/["'>]$/, ''); 
+                    return `<a href="#" style="color: var(--accent-color); cursor: pointer;" onclick="require('electron').shell.openExternal('${c}'); return false;">${c}</a>`; 
+                }).replace(/\n/g, '<br>');
+            } else {
+                descEl.innerHTML = tempDiv.innerHTML.replace(/\n/g, '<br>');
+            }
+        }
+
+        const editBtn = document.getElementById('edit-event'), deleteBtn = document.getElementById('delete-event');
+        if (editBtn) {
+            editBtn.onclick = () => {
+                if (eventPopup) eventPopup.classList.add('hidden');
+                editingEvent = event;
+                if (quickAddInput) quickAddInput.value = stripTags(event.summary);
+                if (eventLocationInput) eventLocationInput.value = event.location || '';
+                if (eventDescriptionInput) eventDescriptionInput.value = event.description || '';
+                const isAllDay = !!event.start.date;
+                if (allDayCheck) {
+                    allDayCheck.checked = isAllDay;
+                    updateAllDayUI();
+                }
+                const dateKey = (event.start.dateTime || event.start.date).split('T')[0];
+                const span = getEventDaySpanInfo(event, dateKey);
+                if (eventStartDate) eventStartDate.value = span ? span.startDate : dateKey;
+                if (eventEndDate) eventEndDate.value = span ? span.lastActiveDay : dateKey;
+
+                if (!isAllDay && event.start.dateTime) {
+                    const startDt = new Date(event.start.dateTime);
+                    const sH = startDt.getHours().toString().padStart(2, '0');
+                    const sM = startDt.getMinutes().toString().padStart(2, '0');
+                    if (eventStartTime) eventStartTime.value = `${sH}:${sM}`;
+                    if (event.end && event.end.dateTime) {
+                        const endDt = new Date(event.end.dateTime);
+                        const eH = endDt.getHours().toString().padStart(2, '0');
+                        const eM = endDt.getMinutes().toString().padStart(2, '0');
+                        if (eventEndTime) eventEndTime.value = `${eH}:${eM}`;
+                        isEndTimeUserModified = true;
+                    }
+                }
+                if (document.getElementById('important-check')) document.getElementById('important-check').checked = event.summary.includes('[IMPORTANT]');
+                if (document.getElementById('highlight-cell-check')) document.getElementById('highlight-cell-check').checked = event.summary.includes('[HIGHLIGHT]');
+                
+                let selectedHex = 'default';
+                if (event.eventLabelId) {
+                    selectedHex = findLabelHex(event.eventLabelId) || 'default';
+                } else if (event.colorId && GOOGLE_COLORS[event.colorId]) {
+                    selectedHex = GOOGLE_COLORS[event.colorId].bg;
+                } else if (event.summary) {
+                    const colorMatch = event.summary.match(/\[COLOR:(#[0-9a-fA-F]{3,6})\]/);
+                    if (colorMatch) selectedHex = colorMatch[1].toLowerCase();
+                }
+                if (document.getElementById('selected-entry-color')) document.getElementById('selected-entry-color').value = selectedHex;
+                if (selectedHex === 'default') {
+                    document.querySelectorAll('.color-opt').forEach(opt => opt.classList.remove('active'));
+                    document.getElementById('default-color-btn')?.classList.add('active');
+                } else {
+                    document.getElementById('default-color-btn')?.classList.remove('active');
+                    let matched = false;
+                    document.querySelectorAll('.color-opt').forEach(opt => {
+                        const optHex = opt.getAttribute('data-color')?.toLowerCase();
+                        if (!matched && optHex === selectedHex.toLowerCase()) {
+                            opt.classList.add('active');
+                            matched = true;
+                        } else {
+                            opt.classList.remove('active');
+                        }
+                    });
+                }
+
+                if (extraFields) extraFields.classList.remove('hidden');
+                if (toggleExtraBtn) toggleExtraBtn.classList.add('hidden');
+
+                selectedDay = (event.start.dateTime || event.start.date).split('T')[0];
+                if (quickAddModal) quickAddModal.classList.remove('hidden');
+                quickAddInput?.focus();
+            };
+        }
+
+        if (deleteBtn) {
+            deleteBtn.onclick = async () => {
+                await ipcRenderer.invoke('delete-event', { calendarId: event.calendarId, eventId: event.id });
+                closeAllModals(); fetchEvents();
+            };
+        }
+        if (eventPopup) eventPopup.classList.remove('hidden');
+    }
+
+
+    function closeAllModals() {
+        if (quickAddModal) quickAddModal.classList.add('hidden');
+        if (settingsOverlay) settingsOverlay.classList.add('hidden');
+        if (eventPopup) eventPopup.classList.add('hidden');
+        if (quickAddInput) quickAddInput.value = ''; 
+        if (eventLocationInput) eventLocationInput.value = ''; 
+        if (eventDescriptionInput) eventDescriptionInput.value = '';
+        if (allDayCheck) allDayCheck.checked = false;
+        if (eventStartDate) eventStartDate.value = '';
+        if (eventEndDate) eventEndDate.value = '';
+        if (timeInputsContainer) timeInputsContainer.classList.remove('hidden', 'disabled');
+        if (allDayStatusText) allDayStatusText.classList.add('hidden');
+        if (document.getElementById('important-check')) document.getElementById('important-check').checked = false;
+        if (document.getElementById('highlight-cell-check')) document.getElementById('highlight-cell-check').checked = false;
+        if (document.getElementById('selected-entry-color')) document.getElementById('selected-entry-color').value = 'default';
+        document.querySelectorAll('.color-opt').forEach(opt => opt.classList.remove('active'));
+        document.getElementById('default-color-btn')?.classList.add('active');
+        if (extraFields) extraFields.classList.remove('hidden');
+        editingEvent = null;
+    }
+
+    async function handleAutoSaveAndClose() {
+        try {
+            if (quickAddInput && quickAddInput.value.trim() !== '') {
+                let shouldSave = true;
+                if (editingEvent) {
+                    const currentText = stripTags(quickAddInput.value);
+                    const originalText = stripTags(editingEvent.summary);
+                    const currentLoc = eventLocationInput ? eventLocationInput.value : '';
+                    const originalLoc = editingEvent.location || '';
+                    const currentDesc = eventDescriptionInput ? eventDescriptionInput.value : '';
+                    const originalDesc = editingEvent.description || '';
+                    const currentImportant = document.getElementById('important-check')?.checked || false;
+                    const originalImportant = editingEvent.summary.includes('[IMPORTANT]');
+                    const currentHighlight = document.getElementById('highlight-cell-check')?.checked || false;
+                    const originalHighlight = editingEvent.summary.includes('[HIGHLIGHT]');
+                    
+                    let originalHex = 'default';
+                    if (editingEvent.eventLabelId) {
+                        originalHex = findLabelHex(editingEvent.eventLabelId) || 'default';
+                    } else if (editingEvent.colorId && GOOGLE_COLORS[editingEvent.colorId]) {
+                        originalHex = GOOGLE_COLORS[editingEvent.colorId].bg;
+                    } else if (editingEvent.summary) {
+                        const colorMatch = editingEvent.summary.match(/\[COLOR:(#[0-9a-fA-F]{3,6})\]/);
+                        if (colorMatch) originalHex = colorMatch[1].toLowerCase();
+                    }
+                    const currentHex = (document.getElementById('selected-entry-color')?.value || 'default').toLowerCase();
+                    
+                    const currentAllDay = allDayCheck ? allDayCheck.checked : false;
+                    const originalAllDay = !editingEvent.start.dateTime;
+
+                    let originalStartTime = '';
+                    let originalEndTime = '';
+                    if (editingEvent.start && editingEvent.start.dateTime) {
+                        const startDt = new Date(editingEvent.start.dateTime);
+                        const sH = startDt.getHours().toString().padStart(2, '0');
+                        const sM = startDt.getMinutes().toString().padStart(2, '0');
+                        originalStartTime = `${sH}:${sM}`;
+                    }
+                    if (editingEvent.end && editingEvent.end.dateTime) {
+                        const endDt = new Date(editingEvent.end.dateTime);
+                        const eH = endDt.getHours().toString().padStart(2, '0');
+                        const eM = endDt.getMinutes().toString().padStart(2, '0');
+                        originalEndTime = `${eH}:${eM}`;
+                    }
+
+                    const currentStartTime = (!currentAllDay && eventStartTime && eventStartTime.value) ? eventStartTime.value : '';
+                    const currentEndTime = (!currentAllDay && eventEndTime && eventEndTime.value) ? eventEndTime.value : '';
+
+                    let originalStartDate = '';
+                    let originalEndDate = '';
+                    if (editingEvent.start && editingEvent.start.date) {
+                        const span = getEventDaySpanInfo(editingEvent, editingEvent.start.date);
+                        originalStartDate = span ? span.startDate : editingEvent.start.date;
+                        originalEndDate = span ? span.lastActiveDay : editingEvent.start.date;
+                    }
+                    const currentStartDate = (currentAllDay && eventStartDate && eventStartDate.value) ? eventStartDate.value : '';
+                    const currentEndDate = (currentAllDay && eventEndDate && eventEndDate.value) ? eventEndDate.value : '';
+
+                    if (currentText === originalText && 
+                        currentLoc === originalLoc && 
+                        currentDesc === originalDesc && 
+                        currentImportant === originalImportant && 
+                        currentHighlight === originalHighlight && 
+                        currentHex === originalHex &&
+                        currentAllDay === originalAllDay &&
+                        currentStartTime === originalStartTime &&
+                        currentEndTime === originalEndTime &&
+                        currentStartDate === originalStartDate &&
+                        currentEndDate === originalEndDate) {
+                        shouldSave = false;
+                    }
+                }
+
+                if (shouldSave) {
+                    await saveCurrentEvent();
+                }
+            }
+        } catch (err) {
+            console.error('Error during handleAutoSaveAndClose:', err);
+        } finally {
+            closeAllModals();
+        }
+    }
+
+    window.onclick = async (e) => { 
+        if (e.target.classList.contains('modal')) {
+            await handleAutoSaveAndClose(); 
+        }
+    };
+    if (viewToggleBtn) viewToggleBtn.onclick = () => toggleViewMode();
+    if (closePopupBtn) closePopupBtn.onclick = async () => await handleAutoSaveAndClose();
+    if (prevMonthBtn) prevMonthBtn.onclick = () => {
+        if (currentViewMode === 'week') {
+            currentViewDate.setDate(currentViewDate.getDate() - 7);
+        } else {
+            currentViewDate.setMonth(currentViewDate.getMonth() - 1);
+        }
+        renderCalendar();
+        debouncedFetchEvents(250);
+    };
+    if (nextMonthBtn) nextMonthBtn.onclick = () => {
+        if (currentViewMode === 'week') {
+            currentViewDate.setDate(currentViewDate.getDate() + 7);
+        } else {
+            currentViewDate.setMonth(currentViewDate.getMonth() + 1);
+        }
+        renderCalendar();
+        debouncedFetchEvents(250);
+    };
+    if (homeBtn) homeBtn.onclick = () => {
+        currentViewDate = new Date();
+        renderCalendar();
+        debouncedFetchEvents(250);
+    };
+    if (syncBtn) {
+        syncBtn.onclick = () => {
+            syncBtn.classList.add('sync-spinning');
+            setTimeout(() => syncBtn.classList.remove('sync-spinning'), 750);
+            fetchEvents();
+        };
+    }
+
+    window.addEventListener('keydown', (e) => {
+        const quickAddOpen = quickAddModal && !quickAddModal.classList.contains('hidden');
+        const settingsOpen = settingsOverlay && !settingsOverlay.classList.contains('hidden');
+
+        // Alt+T shortcut toggles task drawer even if an input is focused (when modals are closed)
+        if (e.altKey && (e.key === 't' || e.key === 'T')) {
+            if (!quickAddOpen && !settingsOpen) {
+                e.preventDefault();
+                toggleTaskDrawer();
+                return;
+            }
+        }
+
+        const tag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+        if (quickAddOpen || settingsOpen) return;
+
+        if (e.key === 'w' || e.key === 'W') {
+            if (currentViewMode !== 'week') toggleViewMode('week');
+        } else if (e.key === 'm' || e.key === 'M') {
+            if (currentViewMode !== 'month') toggleViewMode('month');
+        } else if (e.key === 't' || e.key === 'T') {
+            toggleTaskDrawer();
+        } else if (e.key === 'Escape') {
+            if (isTaskDrawerOpen) toggleTaskDrawer(false);
+        }
+    });
+
+    // ── Local Tasks & Drawer Logic ──────────────────────────────────────────
+    function updateTaskDrawerUI(isOpen) {
+        isTaskDrawerOpen = isOpen;
+        document.body.classList.toggle('task-drawer-open', isOpen);
+        if (taskDrawer) {
+            if (isOpen) {
+                taskDrawer.classList.remove('hidden');
+                taskDrawerToggle?.classList.add('active');
+                setTimeout(() => drawerTaskInput?.focus(), 100);
+            } else {
+                taskDrawer.classList.add('hidden');
+                taskDrawerToggle?.classList.remove('active');
+            }
+        }
+    }
+
+    ipcRenderer.on('set-task-drawer-state', (_event, state) => {
+        updateTaskDrawerUI(state);
+    });
+
+    async function toggleTaskDrawer(shouldOpen) {
+        try {
+            const newState = await ipcRenderer.invoke('toggle-task-drawer', shouldOpen);
+            updateTaskDrawerUI(newState);
+        } catch (err) {
+            console.error('Error toggling task drawer:', err);
+        }
+    }
+
+    async function saveLocalTasks() {
+        try {
+            await ipcRenderer.invoke('save-local-tasks', localTasks);
+            renderTasks();
+        } catch (err) {
+            console.error('Failed to save local tasks:', err);
+        }
+    }
+
+    function toggleTaskStatus(taskId) {
+        const task = localTasks.find(t => t.id === taskId);
+        if (!task) return;
+
+        const isNowCompleted = task.status !== 'completed';
+        task.status = isNowCompleted ? 'completed' : 'needsAction';
+        playChimeSound(isNowCompleted);
+        saveLocalTasks();
+    }
+
+    function deleteTask(taskId) {
+        localTasks = localTasks.filter(t => t.id !== taskId);
+        saveLocalTasks();
+    }
+
+    function renderTasks() {
+        if (!drawerTaskList) return;
+        drawerTaskList.innerHTML = '';
+
+        const activeCount = localTasks.filter(t => t.status !== 'completed').length;
+        if (drawerCountBadge) drawerCountBadge.innerText = activeCount;
+        if (taskDrawerBadge) {
+            taskDrawerBadge.innerText = activeCount;
+            if (activeCount > 0) {
+                taskDrawerBadge.classList.remove('hidden');
+            } else {
+                taskDrawerBadge.classList.add('hidden');
+            }
+        }
+
+        const filtered = localTasks.filter(t => {
+            if (taskFilter === 'active') return t.status !== 'completed';
+            if (taskFilter === 'completed') return t.status === 'completed';
+            return true;
+        });
+
+        if (filtered.length === 0) {
+            const emptyEl = document.createElement('div');
+            emptyEl.className = 'drawer-empty-state';
+            emptyEl.innerText = taskFilter === 'completed' 
+                ? 'Henüz tamamlanan görev yok.' 
+                : (taskFilter === 'active' ? 'Hepsi tamam! Aktif görev yok.' : 'Henüz görev yok.\nEklemek için yukarıya yazın!');
+            drawerTaskList.appendChild(emptyEl);
+            return;
+        }
+
+        filtered.forEach(task => {
+            const item = document.createElement('div');
+            item.className = 'drawer-task-item' + (task.status === 'completed' ? ' completed' : '');
+            item.draggable = true;
+
+            // HTML5 Drag and Drop for Time-blocking onto calendar
+            item.ondragstart = (e) => {
+                e.dataTransfer.setData('text/plain', task.title);
+                e.dataTransfer.setData('application/json', JSON.stringify(task));
+                item.classList.add('dragging');
+            };
+            item.ondragend = () => {
+                item.classList.remove('dragging');
+            };
+
+            // Circular Checkbox
+            const checkbox = document.createElement('div');
+            checkbox.className = 'drawer-task-checkbox';
+            checkbox.title = task.status === 'completed' ? 'Tamamlanmadı olarak işaretle' : 'Tamamlandı olarak işaretle';
+            checkbox.innerHTML = `<svg class="drawer-task-checkbox-check" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+            checkbox.onclick = (e) => {
+                e.stopPropagation();
+                toggleTaskStatus(task.id);
+            };
+
+            // Task title
+            const titleSpan = document.createElement('span');
+            titleSpan.className = 'drawer-task-text';
+            titleSpan.innerText = task.title;
+            titleSpan.title = 'Düzenlemek için tıkla, planlamak için takvime sürükle';
+            titleSpan.contentEditable = 'true';
+            titleSpan.spellcheck = false;
+            titleSpan.onblur = () => {
+                const newTitle = titleSpan.innerText.trim();
+                if (newTitle && newTitle !== task.title) {
+                    task.title = newTitle;
+                    saveLocalTasks();
+                } else {
+                    titleSpan.innerText = task.title;
+                }
+            };
+            titleSpan.onkeydown = (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    titleSpan.blur();
+                }
+            };
+
+            // Delete button
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'drawer-task-delete';
+            deleteBtn.title = 'Görevi sil';
+            deleteBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
+            deleteBtn.onclick = (e) => {
+                e.stopPropagation();
+                deleteTask(task.id);
+            };
+
+            item.appendChild(checkbox);
+            item.appendChild(titleSpan);
+            item.appendChild(deleteBtn);
+            drawerTaskList.appendChild(item);
+        });
+    }
+
+    function addNewTask(rawTitle) {
+        const title = (rawTitle || '').trim();
+        if (!title) return;
+
+        const newTask = {
+            id: 'task_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+            title: title,
+            notes: '',
+            status: 'needsAction',
+            due: null,
+            createdAt: Date.now()
+        };
+
+        localTasks.unshift(newTask);
+        saveLocalTasks();
+        playChimeSound(false);
+
+        if (drawerTaskInput) {
+            drawerTaskInput.value = '';
+            drawerTaskInput.focus();
+        }
+    }
+
+    async function loadLocalTasks() {
+        try {
+            localTasks = await ipcRenderer.invoke('get-local-tasks') || [];
+            isTaskDrawerOpen = await ipcRenderer.invoke('get-drawer-state') || false;
+            updateTaskDrawerUI(isTaskDrawerOpen);
+            renderTasks();
+        } catch (err) {
+            console.error('Failed to load local tasks:', err);
+        }
+    }
+
+    if (taskDrawerToggle) taskDrawerToggle.onclick = () => toggleTaskDrawer();
+    if (closeDrawerBtn) closeDrawerBtn.onclick = () => toggleTaskDrawer(false);
+    if (drawerAddBtn) drawerAddBtn.onclick = () => addNewTask(drawerTaskInput ? drawerTaskInput.value : '');
+    if (drawerTaskInput) {
+        drawerTaskInput.onkeydown = (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addNewTask(drawerTaskInput.value);
+            }
+        };
+    }
+    if (drawerTabs) {
+        drawerTabs.forEach(tab => {
+            tab.onclick = () => {
+                drawerTabs.forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                taskFilter = tab.dataset.filter || 'all';
+                renderTasks();
+            };
+        });
+    }
+
+    function updateLockUI(isLocked) {
+        if (lockBtn) {
+            lockBtn.classList.toggle('is-locked', isLocked);
+            lockBtn.style.opacity = '';
+            lockBtn.style.background = '';
+            lockBtn.style.borderColor = '';
+        }
+        if (lockPositionCheck) lockPositionCheck.checked = isLocked;
+        document.body.classList.toggle('locked-mode', isLocked);
+    }
+
+    if (lockBtn) {
+        lockBtn.onclick = () => {
+            const isLocked = !document.body.classList.contains('locked-mode');
+            ipcRenderer.send('set-lock-position', isLocked);
+            updateLockUI(isLocked);
+        };
+    }
+
+    if (settingsToggle) {
+        settingsToggle.onclick = async () => {
+            try {
+                const settings = await ipcRenderer.invoke('get-settings');
+                const startup = await ipcRenderer.invoke('get-login-settings');
+                if (startupCheck) startupCheck.checked = startup ? startup.openAtLogin : false;
+                if (alwaysOnTopCheck) alwaysOnTopCheck.checked = settings.alwaysOnTop || false;
+                if (lockPositionCheck) lockPositionCheck.checked = settings.lockPosition || false;
+                if (desktopModeCheck) desktopModeCheck.checked = settings.desktopMode || false;
+                if (startOfWeekSelect) startOfWeekSelect.value = settings.startOfWeek || 0;
+                if (defaultViewSelect) defaultViewSelect.value = settings.defaultViewMode || 'month';
+                if (timeStyleSelect) timeStyleSelect.value = settings.timeDisplayStyle || 'start-only';
+                if (soundEnabledCheck) soundEnabledCheck.checked = (typeof settings.soundEnabled === 'boolean') ? settings.soundEnabled : true;
+                if (notificationsEnabledCheck) notificationsEnabledCheck.checked = settings.notificationsEnabled || false;
+                if (notifyBeforeRow) notifyBeforeRow.classList.toggle('hidden', !settings.notificationsEnabled);
+                // Restore pill selection
+                if (notifyMinutesGroup) {
+                    notifyMinutesGroup.querySelectorAll('.pill-btn').forEach(btn => {
+                        btn.classList.toggle('active', parseInt(btn.dataset.value) === (settings.notifyMinutesBefore || 15));
+                    });
+                }
+                
+                // Restore hotkey selection
+                if (hotkeyPresetSelect) {
+                    hotkeyPresetSelect.value = settings.hotkeyToggle || 'CommandOrControl+Shift+C';
+                }
+                if (taskHotkeyPresetSelect) {
+                    taskHotkeyPresetSelect.value = settings.taskHotkeyToggle || 'Alt+T';
+                }
+                
+                // Render accounts
+                await renderAccountsList();
+                
+                // Fetch and render calendars
+                try {
+                    const cList = document.getElementById('calendars-list');
+                    if (cList) {
+                        cList.innerHTML = '<div style="font-size: 0.85rem; opacity: 0.5;">Yükleniyor...</div>';
+                        allCalendars = await ipcRenderer.invoke('get-calendars');
+                        cList.innerHTML = '';
+                        
+                        if (!selectedCalendarIds && allCalendars.length > 0) {
+                            selectedCalendarIds = allCalendars.map(c => c.id);
+                            ipcRenderer.send('set-selected-calendars', selectedCalendarIds);
+                        }
+
+                        // Group calendars by account
+                        const grouped = {};
+                        allCalendars.forEach(cal => {
+                            const key = cal.accountEmail || 'Bilinmeyen';
+                            if (!grouped[key]) grouped[key] = [];
+                            grouped[key].push(cal);
+                        });
+
+                        const renderCalItem = (cal, container) => {
+                            const item = document.createElement('div');
+                            item.className = 'setting-item';
+                            item.style.marginBottom = '6px';
+                            const isChecked = selectedCalendarIds ? selectedCalendarIds.includes(cal.id) : true;
+                            item.innerHTML = `
+                                <label class="switch">
+                                    <span style="display:flex; align-items:center; min-width:0; overflow:hidden;">
+                                        <span class="calendar-item-color" style="background-color: ${cal.backgroundColor}; flex-shrink:0;"></span>
+                                        <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${cal.summary}</span>
+                                    </span>
+                                    <input type="checkbox" value="${cal.id}" ${isChecked ? 'checked' : ''}>
+                                    <span class="slider-toggle"></span>
+                                </label>
+                            `;
+                            const checkbox = item.querySelector('input');
+                            checkbox.onchange = (e) => {
+                                if (!selectedCalendarIds) selectedCalendarIds = allCalendars.map(c => c.id);
+                                if (e.target.checked) {
+                                    if (!selectedCalendarIds.includes(cal.id)) selectedCalendarIds.push(cal.id);
+                                } else {
+                                    selectedCalendarIds = selectedCalendarIds.filter(id => id !== cal.id);
+                                }
+                                ipcRenderer.send('set-selected-calendars', selectedCalendarIds);
+                                fetchEvents();
+                            };
+                            container.appendChild(item);
+                        };
+
+                        Object.entries(grouped).forEach(([email, cals]) => {
+                            // Account header
+                            const header = document.createElement('div');
+                            header.className = 'cal-account-header';
+                            header.innerHTML = `<span style="opacity: 0.7;">👤</span> <span>${email}</span>`;
+                            header.title = email;
+                            cList.appendChild(header);
+                            // Calendar items under this account
+                            cals.forEach(cal => renderCalItem(cal, cList));
+                        });
+                    }
+                } catch(err) {
+                    console.error('Failed to load calendars', err);
+                    const cList = document.getElementById('calendars-list');
+                    if (cList) cList.innerHTML = '<div style="font-size: 0.85rem; color: #ff5252;">Yüklenemedi</div>';
+                }
+
+                if (settingsOverlay) settingsOverlay.classList.remove('hidden');
+            } catch (err) {
+                console.error('Settings error:', err);
+                alert('Ayarlar açılamadı: ' + err.message);
+            }
+        };
+    }
+
+
+    if (startupCheck) startupCheck.onchange = (e) => ipcRenderer.send('set-login-settings', { openAtLogin: e.target.checked });
+    if (alwaysOnTopCheck) {
+        alwaysOnTopCheck.onchange = (e) => {
+            ipcRenderer.send('set-always-on-top', e.target.checked);
+            if (e.target.checked && desktopModeCheck) desktopModeCheck.checked = false;
+        };
+    }
+    if (lockPositionCheck) {
+        lockPositionCheck.onchange = (e) => {
+            ipcRenderer.send('set-lock-position', e.target.checked);
+            updateLockUI(e.target.checked);
+        };
+    }
+    if (desktopModeCheck) {
+        desktopModeCheck.onchange = (e) => {
+            ipcRenderer.send('set-desktop-mode', e.target.checked);
+            if (e.target.checked && alwaysOnTopCheck) alwaysOnTopCheck.checked = false;
+        };
+    }
+    if (startOfWeekSelect) startOfWeekSelect.onchange = (e) => { startOfWeek = parseInt(e.target.value); ipcRenderer.send('set-start-of-week', startOfWeek); renderCalendar(); };
+    if (defaultViewSelect) {
+        defaultViewSelect.onchange = (e) => {
+            ipcRenderer.send('set-default-view-mode', e.target.value);
+        };
+    }
+    if (timeStyleSelect) {
+        timeStyleSelect.onchange = (e) => {
+            timeDisplayStyle = e.target.value;
+            ipcRenderer.send('set-time-display-style', timeDisplayStyle);
+            renderCalendar();
+        };
+    }
+    if (soundEnabledCheck) {
+        soundEnabledCheck.onchange = (e) => {
+            soundEnabled = e.target.checked;
+            ipcRenderer.send('set-theme-prop', { key: 'soundEnabled', value: soundEnabled });
+        };
+    }
+    if (notificationsEnabledCheck) {
+        notificationsEnabledCheck.onchange = (e) => {
+            notificationsEnabled = e.target.checked;
+            ipcRenderer.send('set-theme-prop', { key: 'notificationsEnabled', value: notificationsEnabled });
+            if (notifyBeforeRow) notifyBeforeRow.classList.toggle('hidden', !notificationsEnabled);
+        };
+    }
+    if (notifyMinutesGroup) {
+        notifyMinutesGroup.querySelectorAll('.pill-btn').forEach(btn => {
+            btn.onclick = () => {
+                notifyMinutesGroup.querySelectorAll('.pill-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                notifyMinutesBefore = parseInt(btn.dataset.value);
+                ipcRenderer.send('set-theme-prop', { key: 'notifyMinutesBefore', value: notifyMinutesBefore });
+            };
+        });
+    }
+
+    // ── Global Hotkey management ───────────────────────────────────────────
+    if (navigator.platform.toUpperCase().indexOf('MAC') >= 0) {
+        if (hotkeyPresetSelect) {
+            Array.from(hotkeyPresetSelect.options).forEach(opt => {
+                opt.textContent = opt.textContent.replace(/Ctrl/g, 'Cmd');
+            });
+        }
+        if (taskHotkeyPresetSelect) {
+            Array.from(taskHotkeyPresetSelect.options).forEach(opt => {
+                opt.textContent = opt.textContent.replace(/Ctrl/g, 'Cmd').replace(/Alt/g, 'Option');
+            });
+        }
+    }
+
+    if (hotkeyPresetSelect) {
+        hotkeyPresetSelect.onchange = async (e) => {
+            await ipcRenderer.invoke('set-hotkey-toggle', e.target.value);
+        };
+    }
+
+    if (taskHotkeyPresetSelect) {
+        taskHotkeyPresetSelect.onchange = async (e) => {
+            await ipcRenderer.invoke('set-task-hotkey-toggle', e.target.value);
+        };
+    }
+
+    // ── Accounts management ─────────────────────────────────────────────────
+
+    async function renderAccountsList() {
+        if (!accountsList) return;
+        accountsList.innerHTML = '';
+
+        let accounts;
+        try {
+            accounts = await ipcRenderer.invoke('get-accounts');
+        } catch (_e) {
+            accountsList.innerHTML = '<div style="font-size:0.8rem;opacity:0.4;">Hesaplar yüklenemedi.</div>';
+            return;
+        }
+
+        const allAccounts = [
+            { email: accounts.primary.email, enabled: accounts.primary.enabled, isPrimary: true },
+            ...accounts.additional.map(a => ({ ...a, isPrimary: false }))
+        ];
+
+        allAccounts.forEach(acc => {
+            const row = document.createElement('div');
+            row.className = 'account-item';
+
+            const left = document.createElement('div');
+            left.className = 'account-item-left';
+
+            const label = document.createElement('span');
+            label.className = 'account-email';
+            label.textContent = acc.email;
+            label.title = acc.email;
+
+            // Toggle
+            const toggleLabel = document.createElement('label');
+            toggleLabel.className = 'switch';
+            const toggleInput = document.createElement('input');
+            toggleInput.type = 'checkbox';
+            toggleInput.checked = acc.enabled;
+            toggleInput.onchange = (e) => {
+                ipcRenderer.send('toggle-account', { email: acc.email, enabled: e.target.checked });
+            };
+            const toggleSlider = document.createElement('span');
+            toggleSlider.className = 'slider-toggle';
+            toggleLabel.appendChild(toggleInput);
+            toggleLabel.appendChild(toggleSlider);
+
+            left.appendChild(label);
+            row.appendChild(left);
+
+            const actionsWrapper = document.createElement('div');
+            actionsWrapper.className = 'account-item-actions';
+            actionsWrapper.appendChild(toggleLabel);
+
+            // Action button
+            const actionBtn = document.createElement('button');
+            actionBtn.className = 'account-action-btn';
+            if (acc.isPrimary) {
+                actionBtn.textContent = 'Çıkış yap';
+                actionBtn.title = 'Bu hesaptan çıkış yap';
+                actionBtn.onclick = () => ipcRenderer.invoke('reset-auth');
+            } else {
+                actionBtn.textContent = 'Kaldır';
+                actionBtn.title = 'Bu hesabı kaldır';
+                actionBtn.style.borderColor = 'rgba(244,67,54,0.4)';
+                actionBtn.style.color = 'rgba(244,67,54,0.8)';
+                actionBtn.onclick = async () => {
+                    row.style.opacity = '0.4';
+                    await ipcRenderer.invoke('remove-account', acc.email);
+                    renderAccountsList();
+                };
+            }
+            actionsWrapper.appendChild(actionBtn);
+            row.appendChild(actionsWrapper);
+            accountsList.appendChild(row);
+        });
+    }
+
+    if (addAccountBtn) {
+        addAccountBtn.onclick = async () => {
+            addAccountBtn.textContent = 'Tarayıcı açılıyor...';
+            addAccountBtn.disabled = true;
+            try {
+                const result = await ipcRenderer.invoke('add-account');
+                if (result.success) {
+                    await renderAccountsList();
+                } else {
+                    alert(result.error || 'Hesap eklenemedi.');
+                }
+            } catch (e) {
+                alert('Hesap ekleme hatası: ' + e.message);
+            } finally {
+                addAccountBtn.textContent = '+ Hesap Ekle';
+                addAccountBtn.disabled = false;
+            }
+        };
+    }
+    
+    [bgColorPicker, textColorPicker, accentColorPicker, todayColorPicker, opacitySlider].forEach(el => {
+        if (!el) return;
+        el.oninput = (e) => {
+            let key = el.id.replace('-picker', '').replace('-slider', '');
+            if (key === 'bg-color') key = 'bg-base';
+            if (key === 'opacity') key = 'bg-opacity';
+            
+            document.documentElement.style.setProperty(`--${key}`, e.target.value);
+            ipcRenderer.send('set-theme-prop', { key, value: e.target.value });
+        };
+    });
+
+
+
+    if (resetSettingsBtn) resetSettingsBtn.onclick = () => { applyTheme(defaultTheme); Object.keys(defaultTheme).forEach(k => ipcRenderer.send('set-theme-prop', { key: k, value: defaultTheme[k] })); };
+    if (closeSettings) closeSettings.onclick = () => closeAllModals();
+
+    ipcRenderer.on('sync-now', () => fetchEvents());
+    ipcRenderer.invoke('get-settings').then(s => {
+        if (s) {
+            startOfWeek = s.startOfWeek || 0;
+            if (s.defaultViewMode) {
+                currentViewMode = s.defaultViewMode;
+                if (defaultViewSelect) defaultViewSelect.value = s.defaultViewMode;
+            }
+            timeDisplayStyle = s.timeDisplayStyle || 'badge';
+            if (timeStyleSelect) timeStyleSelect.value = timeDisplayStyle;
+            if (s.selectedCalendarIds !== undefined && s.selectedCalendarIds !== null) selectedCalendarIds = s.selectedCalendarIds;
+            if (s.lockPosition) updateLockUI(true);
+            if (typeof s.soundEnabled === 'boolean') {
+                soundEnabled = s.soundEnabled;
+                if (soundEnabledCheck) soundEnabledCheck.checked = s.soundEnabled;
+            } else {
+                if (soundEnabledCheck) soundEnabledCheck.checked = true;
+            }
+            // Load notification settings
+            notificationsEnabled = s.notificationsEnabled || false;
+            notifyMinutesBefore = s.notifyMinutesBefore || 15;
+            if (notifyBeforeRow) notifyBeforeRow.classList.toggle('hidden', !notificationsEnabled);
+            applyTheme({ 'bg-base': s['bg-base'], 'text-color': s['text-color'], 'accent-color': s['accent-color'], 'today-color': s['today-color'], 'bg-opacity': s['bg-opacity'] });
+            if (s.version && appVersionLabel) {
+                appVersionLabel.textContent = `v${s.version}`;
+            }
+        }
+        renderCalendar(); // Render immediately with empty state/local settings
+        fetchEvents();
+        loadLocalTasks();
+    });
+
+    window.addEventListener('focus', () => {
+        if (Date.now() - lastSyncTime > 60000) {
+            console.log('Window focused and more than 1 minute passed since last sync. Syncing now...');
+            fetchEvents();
+        }
+    });
+
+    // ── Notification Scheduler ─────────────────────────────────────────────
+    function checkUpcomingNotifications() {
+        if (!notificationsEnabled || !events || events.length === 0) return;
+        const now = new Date();
+        events.forEach(ev => {
+            const startDt = ev.start?.dateTime; // timed events only (not all-day)
+            if (!startDt) return;
+            const start = new Date(startDt);
+            const diffMs = start - now;
+            const diffMin = diffMs / 60000;
+            // Fire if within the notify window
+            if (diffMin > 0 && diffMin <= notifyMinutesBefore) {
+                const key = `${ev.id}_${start.toISOString().slice(0, 16)}`;
+                if (!notifiedEventIds.has(key)) {
+                    notifiedEventIds.add(key);
+                    const timeStr = start.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+                    const minsLeft = Math.round(diffMin);
+                    ipcRenderer.send('fire-notification', {
+                        title: `📅 ${ev.summary || 'Etkinlik'}`,
+                        body: `${minsLeft} dk sonra başlıyor · ${timeStr}`
+                    });
+                }
+            }
+        });
+        // Clear stale keys daily (rough cleanup)
+        if (notifiedEventIds.size > 200) notifiedEventIds.clear();
+    }
+    setInterval(checkUpcomingNotifications, 60000);
+    setInterval(() => fetchEvents(), 5 * 60 * 1000); // arka planda otomatik yenile
+    window.addEventListener('focus', () => debouncedFetchEvents(300));
+
+
+    const updateIndicator = document.getElementById('update-indicator');
+    if (updateIndicator) {
+        ipcRenderer.on('update-available', (event, version) => {
+            updateIndicator.innerText = `New v${version} downloading...`;
+            updateIndicator.classList.remove('hidden');
+            updateIndicator.style.cursor = 'default';
+            updateIndicator.onclick = null;
+        });
+
+        ipcRenderer.on('update-downloaded', (event, version) => {
+            updateIndicator.innerText = `Install v${version} now`;
+            updateIndicator.classList.remove('hidden');
+            updateIndicator.style.cursor = 'pointer';
+            updateIndicator.onclick = () => {
+                ipcRenderer.invoke('install-update');
+            };
+        });
+    }
+} catch (e) { alert('JS Error: ' + e.message); }

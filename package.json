@@ -1,0 +1,57 @@
+{
+  "name": "calendar-on-demand",
+  "version": "1.7.0",
+  "description": "Türkçe masaüstü Google Takvim widget'ı",
+  "author": "Calendar-On-Demand Team",
+  "main": "main.js",
+  "dependencies": {
+    "electron-store": "^8.1.0",
+    "electron-updater": "^6.1.1",
+    "googleapis": "^122.0.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --publish never",
+    "yayinla": "electron-builder --win --publish always"
+  },
+  "devDependencies": {
+    "electron": "25.9.8",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.calendar.ondemand",
+    "productName": "Calendar-On-Demand",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!dist/**",
+      "!docs/**",
+      "!landing/**",
+      "!.agents/**",
+      "!*.md",
+      "!release.ps1",
+      "!color_preview.html",
+      "!*.cmd",
+      "!*.vbs",
+      "!orig_backup_src/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "tray_icon.png",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "KULLANICI_ADI",
+      "repo": "Calendar-On-Demand",
+      "releaseType": "release"
+    }
+  }
+}

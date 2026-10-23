@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>Calendar-On-Demand</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="widget-container">
+        <div class="bg-overlay"></div>
+        <header>
+
+            <div class="header-left">
+                <h2 id="current-month-year">March 2026</h2>
+                <div class="nav-btns">
+                    <button id="prev-month" title="Önceki ay">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                    </button>
+                    <button id="home-btn" title="Bugüne git">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="4" rx="3.5" ry="3.5"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/><circle cx="12" cy="15.5" r="2.2" fill="currentColor"/></svg>
+                    </button>
+                    <button id="next-month" title="Sonraki ay">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="header-right">
+                <button id="task-drawer-toggle" class="icon-btn" title="Görev panelini aç/kapat (Alt+T / T)">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect><path d="m9 14 2 2 4-4"></path></svg>
+                    <span id="task-drawer-badge" class="task-drawer-badge hidden">0</span>
+                </button>
+                <button id="view-toggle-btn" class="icon-btn" title="Haftalık görünüme geç (W)">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M9 3v18"/><path d="M15 3v18"/><rect x="9.75" y="7" width="4.5" height="5" rx="1" fill="currentColor" fill-opacity="0.35" stroke="none"/></svg>
+                </button>
+                <button id="lock-btn" class="icon-btn" title="Konumu kilitle/aç">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"></line><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a1 1 0 0 0 0-2H8a1 1 0 0 0 0 2h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"></path></svg>
+                </button>
+                <button id="sync-btn" class="icon-btn" title="Şimdi senkronize et">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M21 21v-5h-5"/></svg>
+                </button>
+                <button id="settings-toggle" class="icon-btn" title="Ayarlar">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3" fill="currentColor" fill-opacity="0.1"/></svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Settings Overlay -->
+        <div id="settings-overlay" class="modal hidden">
+            <div class="modal-content">
+                <div class="settings-header">
+                    <h3>Ayarlar</h3>
+                    <a class="kofi-header-btn" href="#" onclick="require('electron').shell.openExternal('https://ko-fi.com/kidiksentrik'); return false;" title="Beğendiysen destek olabilirsin ☕"><span class="kofi-hover-text">destek</span>☕</a>
+                </div>
+                
+                <div class="setting-group">
+                    <h4>Davranış</h4>
+                    <div class="setting-item">
+                        <label class="switch">
+                            <span>Windows ile birlikte başlat</span>
+                            <input type="checkbox" id="startup-check">
+                            <span class="slider-toggle"></span>
+                        </label>
+                    </div>
+                    <div class="setting-item">
+                        <label class="switch">
+                            <span>Her zaman üstte</span>
+                            <input type="checkbox" id="always-on-top-check">
+                            <span class="slider-toggle"></span>
+                        </label>
+                    </div>
+                    <div class="setting-item">
+                        <label class="switch">
+                            <span>Konumu kilitle</span>
+                            <input type="checkbox" id="lock-position-check">
+                            <span class="slider-toggle"></span>
+                        </label>
+                    </div>
+                    <div class="setting-item">
+                        <label class="switch">
+                            <span>Masaüstüne sabitle</span>
+                            <input type="checkbox" id="desktop-mode-check">
+                            <span class="slider-toggle"></span>
+                        </label>
+                    </div>
+                    <div class="setting-item">
+                        <label class="switch">
+                            <span>Ses efektleri</span>
+                            <input type="checkbox" id="sound-enabled-check">
+                            <span class="slider-toggle"></span>
+                        </label>
+                    </div>
+                    <div class="setting-item">
+                        <label class="switch">
+                            <span>Etkinlik bildirimleri</span>
+                            <input type="checkbox" id="notifications-enabled-check">
+                            <span class="slider-toggle"></span>
+                        </label>
+                    </div>
+                    <div class="setting-item notify-before-row" id="notify-before-row">
+                        <label>Önceden bildir</label>
+                        <div class="pill-group" id="notify-minutes-group">
+                            <button class="pill-btn" data-value="5">5 dk</button>
+                            <button class="pill-btn" data-value="10">10 dk</button>
+                            <button class="pill-btn active" data-value="15">15 dk</button>
+                            <button class="pill-btn" data-value="30">30 dk</button>
+                        </div>
+                        <div class="notif-hint" id="notif-hint">⚠ Windows ayarlarında bildirimlerin açık olması gerekir</div>
+                    </div>
+                    <div class="setting-item">
+                        <label>Haftanın ilk günü</label>
+                        <select id="start-of-week-select">
+                            <option value="0">Pazar</option>
+                            <option value="1">Pazartesi</option>
+                        </select>
+                    </div>
+                    <div class="setting-item">
+                        <label>Varsayılan görünüm</label>
+                        <select id="default-view-select">
+                            <option value="month">Ay</option>
+                            <option value="week">Hafta</option>
+                        </select>
+                    </div>
+                    <div class="setting-item">
+                        <label>Kısayol (Pencereyi aç/kapat)</label>
+                        <select id="hotkey-preset-select">
+                            <option value="CommandOrControl+Shift+C">Ctrl+Shift+C (Varsayılan)</option>
+                            <option value="Alt+C">Alt+C</option>
+                            <option value="CommandOrControl+Alt+C">Ctrl+Alt+C</option>
+                            <option value="Alt+Space">Alt+Space</option>
+                            <option value="none">Yok (Kapalı)</option>
+                        </select>
+                    </div>
+                    <div class="setting-item">
+                        <label>Kısayol (Görevleri aç/kapat)</label>
+                        <select id="task-hotkey-preset-select">
+                            <option value="Alt+T">Alt+T (Varsayılan)</option>
+                            <option value="CommandOrControl+Shift+T">Ctrl+Shift+T</option>
+                            <option value="CommandOrControl+Alt+T">Ctrl+Alt+T</option>
+                            <option value="none">Yok (Kapalı)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="setting-group">
+                    <h4>Hesaplar</h4>
+                    <div id="accounts-list">
+                        <!-- Populated by JS -->
+                    </div>
+                    <button id="add-account-btn" class="add-account-btn">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                        <span>Hesap Ekle</span>
+                    </button>
+                </div>
+
+                <div class="setting-group">
+                    <h4>Takvimler</h4>
+                    <div id="calendars-list" class="calendars-list">
+                        <div style="font-size: 0.85rem; opacity: 0.5;">Takvimler yükleniyor...</div>
+                    </div>
+                </div>
+
+                <div class="setting-group">
+                    <h4>Görünüm</h4>
+                    <div class="setting-item row">
+                        <label>Arka plan</label>
+                        <input type="color" id="bg-color-picker" value="#ffffff">
+                    </div>
+                    <div class="setting-item">
+                        <label>Saydamlık</label>
+                        <input type="range" id="opacity-slider" min="0.1" max="1.0" step="0.05" value="0.94">
+                    </div>
+                    <div class="setting-item row">
+                        <label>Yazı rengi</label>
+                        <input type="color" id="text-color-picker" value="#0f172a">
+                    </div>
+                    <div class="setting-item row">
+                        <label>Vurgu rengi</label>
+                        <input type="color" id="accent-color-picker" value="#1a73e8">
+                    </div>
+                    <div class="setting-item row">
+                        <label>Bugün vurgusu</label>
+                        <input type="color" id="today-color-picker" value="#1a73e8">
+                    </div>
+                    <div class="setting-item">
+                        <label>Etkinlik saat biçimi</label>
+                        <select id="time-style-select">
+                            <option value="badge">Üstte küçük saat (10:00 ~ 11:00)</option>
+                            <option value="start-only">Yalnızca başlangıç (10:00)</option>
+                            <option value="duration">Kısa süre (10:00 (1sa))</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="modal-actions">
+                    <button id="close-settings">Tamam</button>
+                    <button id="reset-settings">Varsayılana sıfırla</button>
+                </div>
+                <div id="settings-app-version" class="app-version">v0.0.0</div>
+            </div>
+        </div>
+
+
+        <!-- Main Content Area: Calendar Pane + Task Drawer -->
+        <div class="main-content-layout">
+            <div class="calendar-pane">
+                <!-- Month View Container -->
+                <div id="month-view-container" class="month-view-container">
+                    <div class="calendar-grid-header">
+                        <span>Paz</span><span>Pzt</span><span>Sal</span><span>Çar</span><span>Per</span><span>Cum</span><span>Cmt</span>
+                    </div>
+                    
+                    <div id="calendar-days" class="calendar-grid">
+                        <!-- Days injected here -->
+                    </div>
+                </div>
+
+                <!-- Week Timeline View Container -->
+                <div id="week-view-container" class="week-timeline-container hidden">
+                    <!-- Week Header (Day names & numbers) -->
+                    <div class="week-header-row" id="week-header-row"></div>
+                    
+                    <!-- All-day Row -->
+                    <div class="week-allday-row" id="week-allday-row"></div>
+
+                    <!-- Scrollable Hourly Timeline Area -->
+                    <div class="week-scroll-container" id="week-scroll-container">
+                        <div class="week-grid-body" id="week-grid-body">
+                            <div class="week-time-gutter" id="week-time-gutter"></div>
+                            <div class="week-days-columns" id="week-days-columns"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Side Task Drawer Panel -->
+            <aside id="task-drawer" class="task-drawer hidden">
+                <div class="drawer-header">
+                    <div class="drawer-title-group">
+                        <span class="drawer-title">Görevler</span>
+                        <span id="drawer-count-badge" class="drawer-count-badge">0</span>
+                    </div>
+                    <button id="close-drawer-btn" class="drawer-icon-btn" title="Paneli kapat (Esc)">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </div>
+
+                <div class="drawer-input-row">
+                    <input type="text" id="drawer-task-input" placeholder="Görev ekle (Enter)..." autocomplete="off">
+                    <button id="drawer-add-btn" class="drawer-add-btn" title="Görev ekle">+</button>
+                </div>
+
+                <div class="drawer-filter-tabs">
+                    <button class="drawer-tab active" data-filter="all">Tümü</button>
+                    <button class="drawer-tab" data-filter="active">Aktif</button>
+                    <button class="drawer-tab" data-filter="completed">Bitti</button>
+                </div>
+
+                <div id="drawer-task-list" class="drawer-task-list">
+                    <!-- Tasks injected by JS -->
+                </div>
+
+                <div class="drawer-footer-hint">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                    <span>Zaman ayırmak için görevi takvime sürükle</span>
+                </div>
+            </aside>
+        </div>
+
+        <div id="sync-indicator" class="sync-indicator hidden">Senkronize ediliyor...</div>
+        <div id="update-indicator" class="update-indicator hidden">Güncelleme var</div>
+        
+        <!-- Quick Add (Todo List) Modal -->
+        <div id="quick-add-modal" class="modal hidden">
+            <div class="modal-content todo-modal">
+                <div class="todo-header">
+                    <h3 id="todo-date-title">Tarih</h3>
+                </div>
+                
+                <!-- Todo list container -->
+                <div id="todo-list-container" class="todo-list">
+                    <!-- Todo items will be dynamically injected here -->
+                </div>
+
+                <!-- Input area for adding a new todo -->
+                <div class="todo-input-row">
+                    <input type="text" id="quick-add-input" placeholder="Yeni görev ekle (ör. Ekip toplantısı)...">
+                    <button id="save-event" class="primary-btn">Kaydet</button>
+                </div>
+
+                <!-- DateTime group: Date row and Time row -->
+                <div class="todo-datetime-group">
+                    <!-- Date selector row (Always visible right below input) -->
+                    <div class="todo-date-row">
+                        <span class="row-label-pill">Tarih</span>
+                        <div class="date-inputs-container" id="date-inputs-container">
+                            <input type="date" id="event-start-date" class="date-picker-input" title="Başlangıç tarihi">
+                            <span class="time-sep">~</span>
+                            <input type="date" id="event-end-date" class="date-picker-input" title="Bitiş tarihi">
+                        </div>
+                    </div>
+
+                    <!-- Time selector row (All-day toggle + Time Pickers) -->
+                    <div class="todo-time-row">
+                        <label class="time-toggle-label" title="Tüm gün etkinliği">
+                            <input type="checkbox" id="all-day-check">
+                            <span class="custom-pill">Tüm gün</span>
+                        </label>
+                        <div class="time-inputs-container" id="time-inputs-container">
+                            <input type="time" id="event-start-time" class="time-picker-input" title="Başlangıç saati">
+                            <span class="time-sep">~</span>
+                            <input type="time" id="event-end-time" class="time-picker-input" title="Bitiş saati">
+                        </div>
+                        <span class="allday-status-text hidden" id="allday-status-text">Tüm gün etkinliği</span>
+                    </div>
+                </div>
+
+                <div id="extra-fields">
+                    <input type="text" id="event-location" placeholder="Konum (isteğe bağlı)">
+                    <textarea id="event-description" placeholder="Açıklama (isteğe bağlı)"></textarea>
+                    <div class="setting-item">
+                        <label class="switch">
+                            <span>Önemli olarak işaretle</span>
+                            <input type="checkbox" id="important-check">
+                            <span class="slider-toggle"></span>
+                        </label>
+                    </div>
+                    <div class="setting-item">
+                        <label class="switch">
+                            <span>Gün hücresini vurgula</span>
+                            <input type="checkbox" id="highlight-cell-check">
+                            <span class="slider-toggle"></span>
+                        </label>
+                    </div>
+                    <div class="setting-item">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <label style="margin-bottom: 0;">Etkinlik rengi</label>
+                            <button type="button" class="color-opt-default active" id="default-color-btn" data-color="default" data-color-id="default" title="Varsayılan (takvim rengi)">Varsayılan</button>
+                        </div>
+                        <div class="color-presets-24">
+                            <!-- Row 1 (12 colors) -->
+                            <button type="button" class="color-opt" data-color="#d50000" data-color-id="11" title="Tomato" style="background: #d50000; color: #d50000;"></button>
+                            <button type="button" class="color-opt" data-color="#e67c73" data-color-id="4" title="Flamingo" style="background: #e67c73; color: #e67c73;"></button>
+                            <button type="button" class="color-opt" data-color="#f4511e" data-color-id="6" title="Tangerine" style="background: #f4511e; color: #f4511e;"></button>
+                            <button type="button" class="color-opt" data-color="#ef6c00" data-color-id="6" title="Pumpkin" style="background: #ef6c00; color: #ef6c00;"></button>
+                            <button type="button" class="color-opt" data-color="#f09300" data-color-id="6" title="Orange" style="background: #f09300; color: #f09300;"></button>
+                            <button type="button" class="color-opt" data-color="#f6bf26" data-color-id="5" title="Banana" style="background: #f6bf26; color: #f6bf26;"></button>
+                            <button type="button" class="color-opt" data-color="#e4c441" data-color-id="5" title="Lemon" style="background: #e4c441; color: #e4c441;"></button>
+                            <button type="button" class="color-opt" data-color="#c0ca33" data-color-id="2" title="Avocado" style="background: #c0ca33; color: #c0ca33;"></button>
+                            <button type="button" class="color-opt" data-color="#7cb342" data-color-id="2" title="Pistachio" style="background: #7cb342; color: #7cb342;"></button>
+                            <button type="button" class="color-opt" data-color="#0b8043" data-color-id="10" title="Basil" style="background: #0b8043; color: #0b8043;"></button>
+                            <button type="button" class="color-opt" data-color="#33b679" data-color-id="2" title="Eucalyptus" style="background: #33b679; color: #33b679;"></button>
+                            <button type="button" class="color-opt" data-color="#009688" data-color-id="7" title="Teal" style="background: #009688; color: #009688;"></button>
+                            <!-- Row 2 (12 colors) -->
+                            <button type="button" class="color-opt" data-color="#039be5" data-color-id="7" title="Peacock" style="background: #039be5; color: #039be5;"></button>
+                            <button type="button" class="color-opt" data-color="#4285f4" data-color-id="9" title="Blue" style="background: #4285f4; color: #4285f4;"></button>
+                            <button type="button" class="color-opt" data-color="#3f51b5" data-color-id="9" title="Cobalt" style="background: #3f51b5; color: #3f51b5;"></button>
+                            <button type="button" class="color-opt" data-color="#7986cb" data-color-id="1" title="Slate" style="background: #7986cb; color: #7986cb;"></button>
+                            <button type="button" class="color-opt" data-color="#b39ddb" data-color-id="1" title="Lavender" style="background: #b39ddb; color: #b39ddb;"></button>
+                            <button type="button" class="color-opt" data-color="#9e69af" data-color-id="3" title="Amethyst" style="background: #9e69af; color: #9e69af;"></button>
+                            <button type="button" class="color-opt" data-color="#8e24aa" data-color-id="3" title="Grape" style="background: #8e24aa; color: #8e24aa;"></button>
+                            <button type="button" class="color-opt" data-color="#d81b60" data-color-id="4" title="Raspberry" style="background: #d81b60; color: #d81b60;"></button>
+                            <button type="button" class="color-opt" data-color="#ad1457" data-color-id="4" title="Berry" style="background: #ad1457; color: #ad1457;"></button>
+                            <button type="button" class="color-opt" data-color="#795548" data-color-id="8" title="Cocoa" style="background: #795548; color: #795548;"></button>
+                            <button type="button" class="color-opt" data-color="#a79b8e" data-color-id="8" title="Sand" style="background: #a79b8e; color: #a79b8e;"></button>
+                            <button type="button" class="color-opt" data-color="#616161" data-color-id="8" title="Graphite" style="background: #616161; color: #616161;"></button>
+                        </div>
+                        <input type="hidden" id="selected-entry-color" value="default">
+                    </div>
+                </div>
+                <div class="modal-actions" style="margin-top: 10px;">
+                    <span class="hint">Kapatmak için Esc</span>
+                </div>
+            </div>
+        </div>
+
+    </div>
+    <script src="widget.js"></script>
+</body>
+</html>
