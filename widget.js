@@ -1319,6 +1319,9 @@ try {
         }, delay);
     }
 
+    let authWaiting = false;
+    ipcRenderer.on('auth-waiting', () => { authWaiting = true; if (syncIndicator) { syncIndicator.innerText = 'Tarayıcıda Google girişini tamamlayın...'; syncIndicator.classList.remove('hidden'); } });
+
     async function fetchEvents() {
         if (syncTimer) {
             clearTimeout(syncTimer);
@@ -1328,7 +1331,7 @@ try {
         const currentReqId = ++fetchRequestId;
 
         if (syncIndicator) {
-            syncIndicator.innerText = 'Senkronize ediliyor...';
+            syncIndicator.innerText = authWaiting ? 'Tarayıcıda Google girişini tamamlayın...' : 'Senkronize ediliyor...';
             syncIndicator.classList.remove('hidden', 'error');
         }
         
@@ -1344,6 +1347,7 @@ try {
             if (currentReqId !== fetchRequestId) return;
             events = fetchedEvents;
             lastSyncTime = Date.now();
+            authWaiting = false;
             errorCount = 0;
             if (syncIndicator) {
                 syncIndicator.classList.add('hidden');

@@ -90,7 +90,7 @@ async function _authenticateInternal(force = false) {
 
                 if (code) {
                     res.writeHead(200, { 'Content-Type': 'text/html' });
-                    res.end('<html><head><style>body{font-family: sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; background:#0a0a0c; color:#fff; text-align:center;}</style></head><body><h2>Authentication Successful!</h2><p>You can close this tab and return to Calendar-On-Demand.</p></body></html>');
+                    res.end('<html><head><meta charset="utf-8"><style>body{font-family:sans-serif;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;background:#fff;color:#0f172a;text-align:center;}</style></head><body><h2>Giriş başarılı!</h2><p>Bu sekmeyi kapatıp uygulamaya dönebilirsin.</p></body></html>');
                     
                     cleanup();
 
@@ -100,7 +100,7 @@ async function _authenticateInternal(force = false) {
                     resolve(oAuth2Client);
                 } else if (error) {
                     res.writeHead(200, { 'Content-Type': 'text/html' });
-                    res.end('<html><body><h2>Authentication Failed</h2><p>You can close this tab.</p></body></html>');
+                    res.end('<html><head><meta charset="utf-8"></head><body><h2>Giriş başarısız</h2><p>Bu sekmeyi kapatabilirsin.</p></body></html>');
                     cleanup();
                     reject(new Error('Authentication rejected by user.'));
                 } else {
@@ -153,7 +153,7 @@ async function authenticateNewAccount() {
 
                 if (code) {
                     res.writeHead(200, { 'Content-Type': 'text/html' });
-                    res.end('<html><head><style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#0a0a0c;color:#fff;text-align:center;}</style></head><body><h2>Account Added!</h2><p>You can close this tab and return to Calendar-On-Demand.</p></body></html>');
+                    res.end('<html><head><meta charset="utf-8"><style>body{font-family:sans-serif;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;background:#fff;color:#0f172a;text-align:center;}</style></head><body><h2>Hesap eklendi!</h2><p>Bu sekmeyi kapatıp uygulamaya dönebilirsin.</p></body></html>');
                     server.close(); server = null;
 
                     const { tokens } = await oAuth2Client.getToken(code);
@@ -166,7 +166,7 @@ async function authenticateNewAccount() {
                     resolve({ email, token: tokens, client: oAuth2Client });
                 } else if (error) {
                     res.writeHead(200, { 'Content-Type': 'text/html' });
-                    res.end('<html><body><h2>Authentication Failed</h2><p>You can close this tab.</p></body></html>');
+                    res.end('<html><head><meta charset="utf-8"></head><body><h2>Giriş başarısız</h2><p>Bu sekmeyi kapatabilirsin.</p></body></html>');
                     server.close(); server = null;
                     reject(new Error('Authentication rejected by user.'));
                 } else {

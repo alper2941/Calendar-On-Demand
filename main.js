@@ -122,18 +122,30 @@ if (!gotTheLock) {
     });
 
     app.whenReady().then(async () => {
-        console.log('App is ready, authenticating...');
+        console.log('App is ready.');
         try {
-            authClient = await authenticate();
-            console.log('Authentication successful!');
-            fetchAndStorePrimaryEmail().catch(e => console.warn('Email fetch skipped:', e.message));
-            
+            // Pencere ve tepsi önce açılır; Google girişi (ilk kurulumda tarayıcıda) arka planda yapılır.
             createWindow();
             console.log('Window created.');
-            
+
             createTray();
             updateLoginSettings(store.get('openAtLogin', true));
             console.log('Tray created.');
+
+            if (!store.get('token')) {
+                new Notification({ title: 'Calendar-On-Demand', body: 'Tarayıcıda açılan sayfada Google hesabınla giriş yapıp izin ver.' }).show();
+                if (mainWindow) mainWindow.webContents.once('did-finish-load', () => mainWindow.webContents.send('auth-waiting'));
+            }
+            authenticate().then((client) => {
+                authClient = client;
+                console.log('Authentication successful!');
+                if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sync-now');
+                fetchAndStorePrimaryEmail().catch(e => console.warn('Email fetch skipped:', e.message));
+            }).catch((error) => {
+                console.error('Authentication failed:', error);
+                const { dialog } = require('electron');
+                dialog.showErrorBox('Google girişi yapılamadı', (error && error.message) || String(error));
+            });
 
             setupAutoUpdater();
             console.log('Auto-updater initialized.');
