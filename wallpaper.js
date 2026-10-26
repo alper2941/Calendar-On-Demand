@@ -33,6 +33,15 @@ public class WP {
     while ((w = FindWindowEx(IntPtr.Zero, w, "WorkerW", null)) != IntPtr.Zero) RedrawWindow(w, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0100);
     RedrawWindow(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0100);
   }
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
+  public static void DpiAware() { try { if (!SetProcessDpiAwarenessContext((IntPtr)(-4))) SetProcessDPIAware(); } catch { try { SetProcessDPIAware(); } catch {} } }
+  public static bool OnScreen(IntPtr h) {
+    RECT r; GetWindowRect(h, out r);
+    int vx = GetSystemMetrics(76), vy = GetSystemMetrics(77), vw = GetSystemMetrics(78), vh = GetSystemMetrics(79);
+    return IsWindowVisible(h) && r.R - r.L > 50 && r.B - r.T > 50 && r.L < vx + vw && r.R > vx && r.T < vy + vh && r.B > vy;
+  }
   public static IntPtr Prog() { return FindWindow("Progman", null); }
   public static IntPtr Found = IntPtr.Zero;
   public static IntPtr FindWorker() {
@@ -48,6 +57,7 @@ public class WP {
   }
 }
 "@
+[WP]::DpiAware()   # ekran ölçeklemesi (%125 vb.) altında doğru koordinatlar için
 $w = [IntPtr]$h
 $GWL_STYLE = -16
 if ($mode -eq 'lower') {
@@ -55,6 +65,7 @@ if ($mode -eq 'lower') {
   Write-Output 'OK'
 } elseif ($mode -eq 'embed') {
   $rc = New-Object WP+RECT; [WP]::GetWindowRect($w, [ref]$rc) | Out-Null
+  $rc0 = New-Object WP+RECT; $rc0.L = $rc.L; $rc0.T = $rc.T; $rc0.R = $rc.R; $rc0.B = $rc.B
   $p = [WP]::FindWorker()
   if ($p -eq [IntPtr]::Zero) { Write-Output 'NOWORKER'; exit 2 }
   $st = [WP]::GetL($w, $GWL_STYLE).ToInt64()
@@ -65,6 +76,16 @@ if ($mode -eq 'lower') {
   [WP]::SetWindowPos($w, [IntPtr]::Zero, $rc.L, $rc.T, $rc.R - $rc.L, $rc.B - $rc.T, 0x0054) | Out-Null  # NOZORDER|NOACTIVATE|SHOWWINDOW
   $par = [WP]::GetParent($w); $cs = New-Object System.Text.StringBuilder 64; [WP]::GetClassName($par, $cs, 64) | Out-Null
   $r2 = New-Object WP+RECT; [WP]::GetWindowRect($w, [ref]$r2) | Out-Null
+  if (-not [WP]::OnScreen($w)) {
+    # pencere görünür/ekran içinde değil: geri al
+    [WP]::SetParent($w, [IntPtr]::Zero) | Out-Null
+    $st2 = [WP]::GetL($w, $GWL_STYLE).ToInt64()
+    $st2 = ($st2 -band (-bnot 0x40000000L)) -bor 0x80000000L
+    [WP]::SetL($w, $GWL_STYLE, [IntPtr]$st2) | Out-Null
+    [WP]::SetWindowPos($w, [IntPtr]::Zero, $rc0.L, $rc0.T, $rc0.R - $rc0.L, $rc0.B - $rc0.T, 0x0054) | Out-Null
+    [WP]::Repaint()
+    Write-Output 'FAIL-OFFSCREEN'; exit 3
+  }
   Write-Output ('OK parent=' + $par + ' ' + $cs + ' vis=' + [WP]::IsWindowVisible($w) + ' rect=' + $r2.L + ',' + $r2.T + ',' + $r2.R + ',' + $r2.B)
 } else {
   $rc = New-Object WP+RECT; [WP]::GetWindowRect($w, [ref]$rc) | Out-Null
