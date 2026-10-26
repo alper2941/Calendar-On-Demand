@@ -866,6 +866,18 @@ async function setWallpaperMode(on) {
     if (on) {
         if (!mainWindow.isVisible()) mainWindow.showInactive();
         mainWindow.setAlwaysOnTop(false);
+        if (await wallpaper.isBasicGpu()) {
+            // Yedek: gerçek arka plan katmanı yerine masaüstü seviyesinde (diğer pencerelerin altında) sabitle.
+            await wallpaper.lower(mainWindow);
+            store.set('wallpaperMode', false);
+            dialog.showMessageBox({
+                type: 'info',
+                title: 'Arka plan modu',
+                message: 'Bu bilgisayarda gerçek arka plan modu kullanılamıyor.',
+                detail: 'Ekran kartı sürücüsü yüklü değil (Microsoft Temel Görüntü Bağdaştırıcısı). Takvim masaüstünde, diğer pencerelerin altında sabitlendi. Ekran kartı sürücüsünü yüklersen tam arka plan modu çalışır.'
+            });
+            return false;
+        }
         const b = mainWindow.getBounds();
         const ok = await wallpaper.embed(mainWindow);
         if (!ok) return false;

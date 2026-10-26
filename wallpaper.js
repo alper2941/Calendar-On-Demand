@@ -112,7 +112,24 @@ function run(win, mode) {
     });
 }
 
+// Ekran kartı sürücüsü yoksa (Microsoft Temel Görüntü Bağdaştırıcısı) gömülü pencere çizilmiyor: arka plan modu desteklenmez.
+function isBasicGpu() {
+    return new Promise((resolve) => {
+        if (process.env.COD_FORCE_BASIC_GPU === '1') return resolve(true);
+        if (process.platform !== 'win32') return resolve(false);
+        const cmd = "(Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name }) -join '|'";
+        execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', cmd],
+            { timeout: 10000, windowsHide: true }, (err, out) => {
+                const names = String(out || '').trim();
+                resolve(!err && names.length > 0 &&
+                    !/nvidia|amd|radeon|intel|vmware|virtualbox|qxl|parallels/i.test(names) &&
+                    /basic|temel|microsoft/i.test(names));
+            });
+    });
+}
+
 module.exports = {
+    isBasicGpu,
     embed: (win) => run(win, 'embed'),
     detach: (win) => run(win, 'detach'),
     lower: (win) => run(win, 'lower'),
