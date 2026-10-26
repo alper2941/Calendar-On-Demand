@@ -810,7 +810,7 @@ ipcMain.on('set-lock-position', (event, value) => {
     }
 });
 
-// Masaüstüne ortala: pencereyi ekranın ortasına alır, arka planda sabitler ve konumu kilitler.
+// Masaüstüne ortala: pencereyi ekranın ortasına alır ve arka planda (diğer pencerelerin altında) tutar. Kilitlemez; kilit raptiye butonuyla.
 ipcMain.handle('pin-center-desktop', () => {
     if (!mainWindow) return null;
     const cur = mainWindow.getBounds();
@@ -828,12 +828,9 @@ ipcMain.handle('pin-center-desktop', () => {
     store.set('windowBounds', bounds);
     store.set('desktopMode', true);
     store.set('alwaysOnTop', false);
-    store.set('lockPosition', true);
     mainWindow.setAlwaysOnTop(false);
-    mainWindow.setMovable(false);
-    mainWindow.setResizable(false);
     mainWindow.blur();
-    return { locked: true };
+    return { locked: store.get('lockPosition', false) };
 });
 
 // Arka plan (duvar kağıdı katmanı) modu: izleme amaçlı, tıklama almaz. Tepsiden geri çıkılır.
@@ -1011,13 +1008,10 @@ ipcMain.on('set-login-settings', (event, settings) => {
     updateLoginSettings(settings.openAtLogin);
 });
 
-// GitHub kullanıcı adını package.json > build.publish.owner içine yazınca güncelleme açılır.
+// Güncelleme kaynağı, derleme sırasında paketle gelen app-update.yml dosyasından okunur (GitHub deposu).
 function setupAutoUpdater() {
     if (!app.isPackaged) return;
-    const pub = require('./package.json').build.publish;
-    if (!pub.owner || pub.owner === 'KULLANICI_ADI') return;
     try {
-        autoUpdater.setFeedURL({ provider: 'github', owner: pub.owner, repo: pub.repo });
         autoUpdater.autoDownload = true;          // arka planda sessizce indir
         autoUpdater.autoInstallOnAppQuit = true;  // 'Sonra' denirse çıkışta kurulur
         autoUpdater.on('update-downloaded', async (info) => {

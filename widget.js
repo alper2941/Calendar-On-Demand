@@ -2391,8 +2391,8 @@ try {
     const pinCenterBtn = document.getElementById('pin-center-btn');
     if (pinCenterBtn) pinCenterBtn.onclick = async () => {
         const r = await ipcRenderer.invoke('pin-center-desktop');
-        if (r && r.locked) {
-            updateLockUI(true);
+        if (r) {
+            updateLockUI(!!r.locked);
             if (desktopModeCheck) desktopModeCheck.checked = true;
             if (alwaysOnTopCheck) alwaysOnTopCheck.checked = false;
         }

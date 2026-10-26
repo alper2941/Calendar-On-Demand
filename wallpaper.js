@@ -22,6 +22,17 @@ public class WP {
   [DllImport("user32.dll", EntryPoint="GetWindowLongPtr")] public static extern IntPtr GetL(IntPtr h, int i);
   [DllImport("user32.dll", EntryPoint="SetWindowLongPtr")] public static extern IntPtr SetL(IntPtr h, int i, IntPtr v);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr h, IntPtr r, IntPtr g, uint f);
+  [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern bool SystemParametersInfo(uint a, uint b, string c, uint d);
+  public static void Repaint() {
+    // Duvar kağıdını yeniden yükle ve masaüstü katmanlarını baştan çiz (gömülü pencerenin bıraktığı siyah alan kalmasın)
+    SystemParametersInfo(0x0014, 0, null, 0x0002);
+    IntPtr prog = FindWindow("Progman", null);
+    RedrawWindow(prog, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0100);
+    IntPtr w = IntPtr.Zero;
+    while ((w = FindWindowEx(IntPtr.Zero, w, "WorkerW", null)) != IntPtr.Zero) RedrawWindow(w, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0100);
+    RedrawWindow(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0100);
+  }
   public static IntPtr Prog() { return FindWindow("Progman", null); }
   public static IntPtr Found = IntPtr.Zero;
   public static IntPtr FindWorker() {
@@ -62,6 +73,7 @@ if ($mode -eq 'lower') {
   $st = ($st -band (-bnot 0x40000000L)) -bor 0x80000000L
   [WP]::SetL($w, $GWL_STYLE, [IntPtr]$st) | Out-Null
   [WP]::SetWindowPos($w, [IntPtr]::Zero, $rc.L, $rc.T, $rc.R - $rc.L, $rc.B - $rc.T, 0x0054) | Out-Null
+  [WP]::Repaint()
   Write-Output 'OK'
 }
 `;
