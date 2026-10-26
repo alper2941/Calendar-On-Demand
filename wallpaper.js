@@ -22,6 +22,7 @@ public class WP {
   [DllImport("user32.dll", EntryPoint="GetWindowLongPtr")] public static extern IntPtr GetL(IntPtr h, int i);
   [DllImport("user32.dll", EntryPoint="SetWindowLongPtr")] public static extern IntPtr SetL(IntPtr h, int i, IntPtr v);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  public static IntPtr Prog() { return FindWindow("Progman", null); }
   public static IntPtr Found = IntPtr.Zero;
   public static IntPtr FindWorker() {
     IntPtr prog = FindWindow("Progman", null); IntPtr r;
@@ -38,7 +39,10 @@ public class WP {
 "@
 $w = [IntPtr]$h
 $GWL_STYLE = -16
-if ($mode -eq 'embed') {
+if ($mode -eq 'lower') {
+  [WP]::SetWindowPos($w, [IntPtr]1, 0, 0, 0, 0, 0x0013) | Out-Null   # HWND_BOTTOM: normal pencerelerin en altı (masaüstünün üstünde, tarayıcı vb. pencerelerin altında)
+  Write-Output 'OK'
+} elseif ($mode -eq 'embed') {
   $rc = New-Object WP+RECT; [WP]::GetWindowRect($w, [ref]$rc) | Out-Null
   $p = [WP]::FindWorker()
   if ($p -eq [IntPtr]::Zero) { Write-Output 'NOWORKER'; exit 2 }
@@ -78,4 +82,5 @@ function run(win, mode) {
 module.exports = {
     embed: (win) => run(win, 'embed'),
     detach: (win) => run(win, 'detach'),
+    lower: (win) => run(win, 'lower'),
 };

@@ -2492,3 +2492,13 @@ header { align-items: center; }
 .quick-add-close:hover { background: #fee2e2; color: #d93025; }
 .primary-btn.save-bottom { width: 100%; height: 40px; font-size: 0.95rem; margin-top: 6px; }
 .todo-input-row input { flex: 1; }
+
+/* Arka plan modu butonu: belirgin mavi */
+#wallpaper-btn { background: #1a73e8 !important; border-color: #1a73e8 !important; color: #ffffff !important; }
+#wallpaper-btn:hover { background: #1557b0 !important; border-color: #1557b0 !important; }
+
+/* Bugün: kalın kırmızı çerçeve + hafif gölge */
+.day-cell.today { border: 3px solid #d93025 !important; box-shadow: 0 3px 10px rgba(217, 48, 37, 0.35) !important; background: #fff5f5 !important; }
+.day-cell.today .day-number { color: #d93025 !important; font-weight: 800; }
+.week-day-column.today { box-shadow: inset 0 0 0 3px #d93025; }
+.week-header-day-cell.today .week-header-day-num { background: #d93025 !important; color: #fff !important; box-shadow: 0 2px 8px rgba(217, 48, 37, 0.4) !important; }

@@ -827,19 +827,23 @@ ipcMain.handle('pin-center-desktop', () => {
 // Arka plan (duvar kağıdı katmanı) modu: izleme amaçlı, tıklama almaz. Tepsiden geri çıkılır.
 let wallpaperActive = false;
 let editBtnWin = null;
-// Arka plandayken tıklanabilir küçük 'Düzenle' butonu (takvimin sağ alt köşesinde).
+// Arka plandayken tıklanabilir (masaüstü seviyesinde, pencerelerin ALTINDA) küçük 'Düzenle' butonu (takvimin sağ alt köşesinde).
 function showEditButton(b) {
     if (editBtnWin && !editBtnWin.isDestroyed()) return;
     const w = 112, h = 36;
     editBtnWin = new BrowserWindow({
         width: w, height: h, x: Math.round(b.x + b.width - w - 14), y: Math.round(b.y + b.height - h - 14),
         frame: false, transparent: true, resizable: false, movable: false, skipTaskbar: true,
-        alwaysOnTop: true, focusable: false, hasShadow: false, show: false,
+        alwaysOnTop: false, focusable: false, hasShadow: false, show: false,
         webPreferences: { nodeIntegration: true, contextIsolation: false }
     });
     const html = '<body style="margin:0;background:transparent"><button onclick="require(\'electron\').ipcRenderer.send(\'wallpaper-edit\')" style="width:100%;height:100vh;border:1px solid #1a73e8;border-radius:10px;background:#1a73e8;color:#fff;font:700 14px Segoe UI,sans-serif;cursor:pointer;opacity:.85" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.85">✏ Düzenle</button></body>';
     editBtnWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-    editBtnWin.once('ready-to-show', () => editBtnWin && editBtnWin.showInactive());
+    editBtnWin.once('ready-to-show', async () => {
+        if (!editBtnWin) return;
+        editBtnWin.showInactive();
+        await wallpaper.lower(editBtnWin); // masaüstü seviyesine indir: diğer pencerelerin üstüne çıkmaz
+    });
 }
 function hideEditButton() {
     if (editBtnWin && !editBtnWin.isDestroyed()) editBtnWin.destroy();
