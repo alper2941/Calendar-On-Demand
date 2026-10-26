@@ -3,16 +3,17 @@ const path = require('path');
 const Store = require('electron-store');
 const { autoUpdater } = require('electron-updater');
 const { authenticate, authenticateNewAccount } = require('./auth');
+const wallpaper = require('./wallpaper');
 const { getCalendars, listEvents, createEvent, updateEvent, deleteEvent } = require('./calendar');
 
 const store = new Store();
 // Beyaz tema + masaüstüne sabit varsayılanlarına tek seferlik geçiş
-if (store.get('trSetupV2') !== true) {
+if (store.get('trSetupV3') !== true) {
     ['bg-base', 'text-color', 'accent-color', 'today-color', 'bg-opacity'].forEach(k => store.delete(k));
     store.set('desktopMode', true);
     store.set('alwaysOnTop', false);
     store.set('openAtLogin', true);
-    store.set('trSetupV2', true);
+    store.set('trSetupV3', true);
 }
 app.setAppUserModelId('com.calendar.ondemand'); // Required for Windows notifications
 
@@ -264,6 +265,8 @@ async function createWindow() {
             }, 1000);
         }
 
+        if (store.get('wallpaperMode', false)) setTimeout(() => setWallpaperMode(true), 1500);
+
         // Release startup grace period after OS DPI and window initialization have settled
         setTimeout(() => {
             isStartupGracePeriod = false;
@@ -288,6 +291,17 @@ async function createWindow() {
         saveBounds();
     });
     mainWindow.on('move', saveBounds);
+
+    // "Masaüstünü göster" (Win+D / saatin sağ köşesi) pencereleri küçültür; masaüstü modunda widget geri getirilir.
+    mainWindow.on('minimize', () => {
+        if (!store.get('desktopMode', true) || isQuitting) return;
+        setTimeout(() => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.restore();
+                mainWindow.showInactive();
+            }
+        }, 80);
+    });
 
     mainWindow.on('blur', () => {
         if (isPoppedByHotkey) {
@@ -350,6 +364,7 @@ function createTray() {
     const openAtLogin = store.get('openAtLogin', true);
     const contextMenu = Menu.buildFromTemplate([
         { label: 'Göster/Gizle', click: () => toggleWindow() },
+        { label: wallpaperActive ? 'Düzenle moduna geç (arka plandan çıkar)' : 'Arka plan moduna geç (izleme)', click: () => setWallpaperMode(!wallpaperActive) },
         { label: 'Şimdi Senkronize Et', click: () => mainWindow.webContents.send('sync-now') },
         { type: 'separator' },
         { 
@@ -377,6 +392,7 @@ function createTray() {
 }
 
 function toggleWindow() {
+    if (wallpaperActive) { setWallpaperMode(false); return; }
     if (mainWindow.isVisible()) {
         mainWindow.hide();
     } else {
@@ -391,6 +407,7 @@ function toggleWindow() {
 
 function toggleWindowWithFocus() {
     if (!mainWindow) return;
+    if (wallpaperActive) { setWallpaperMode(false); return; }
     if (mainWindow.isMinimized()) {
         mainWindow.restore();
     }
@@ -781,6 +798,79 @@ ipcMain.on('set-lock-position', (event, value) => {
     }
 });
 
+// Masaüstüne ortala: pencereyi ekranın ortasına alır, arka planda sabitler ve konumu kilitler.
+ipcMain.handle('pin-center-desktop', () => {
+    if (!mainWindow) return null;
+    const cur = mainWindow.getBounds();
+    const wa = screen.getDisplayMatching(cur).workArea; // pencerenin bulunduğu ekran
+    const width = Math.min(Math.max(370, cur.width), wa.width);
+    const height = Math.min(Math.max(430, cur.height), wa.height);
+    const bounds = {
+        x: Math.round(wa.x + (wa.width - width) / 2),
+        y: Math.round(wa.y + (wa.height - height) / 2),
+        width, height
+    };
+    mainWindow.setResizable(true);
+    mainWindow.setMovable(true);
+    mainWindow.setBounds(bounds);
+    store.set('windowBounds', bounds);
+    store.set('desktopMode', true);
+    store.set('alwaysOnTop', false);
+    store.set('lockPosition', true);
+    mainWindow.setAlwaysOnTop(false);
+    mainWindow.setMovable(false);
+    mainWindow.setResizable(false);
+    mainWindow.blur();
+    return { locked: true };
+});
+
+// Arka plan (duvar kağıdı katmanı) modu: izleme amaçlı, tıklama almaz. Tepsiden geri çıkılır.
+let wallpaperActive = false;
+let editBtnWin = null;
+// Arka plandayken tıklanabilir küçük 'Düzenle' butonu (takvimin sağ alt köşesinde).
+function showEditButton(b) {
+    if (editBtnWin && !editBtnWin.isDestroyed()) return;
+    const w = 112, h = 36;
+    editBtnWin = new BrowserWindow({
+        width: w, height: h, x: Math.round(b.x + b.width - w - 14), y: Math.round(b.y + b.height - h - 14),
+        frame: false, transparent: true, resizable: false, movable: false, skipTaskbar: true,
+        alwaysOnTop: true, focusable: false, hasShadow: false, show: false,
+        webPreferences: { nodeIntegration: true, contextIsolation: false }
+    });
+    const html = '<body style="margin:0;background:transparent"><button onclick="require(\'electron\').ipcRenderer.send(\'wallpaper-edit\')" style="width:100%;height:100vh;border:1px solid #1a73e8;border-radius:10px;background:#1a73e8;color:#fff;font:700 14px Segoe UI,sans-serif;cursor:pointer;opacity:.85" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.85">✏ Düzenle</button></body>';
+    editBtnWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    editBtnWin.once('ready-to-show', () => editBtnWin && editBtnWin.showInactive());
+}
+function hideEditButton() {
+    if (editBtnWin && !editBtnWin.isDestroyed()) editBtnWin.destroy();
+    editBtnWin = null;
+}
+ipcMain.on('wallpaper-edit', () => setWallpaperMode(false));
+
+async function setWallpaperMode(on) {
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    if (on === wallpaperActive) return wallpaperActive;
+    if (on) {
+        if (!mainWindow.isVisible()) mainWindow.showInactive();
+        mainWindow.setAlwaysOnTop(false);
+        const b = mainWindow.getBounds();
+        const ok = await wallpaper.embed(mainWindow);
+        if (!ok) return false;
+        wallpaperActive = true;
+        showEditButton(b);
+    } else {
+        hideEditButton();
+        await wallpaper.detach(mainWindow);
+        wallpaperActive = false;
+        mainWindow.setMovable(!store.get('lockPosition', false));
+        mainWindow.showInactive();
+    }
+    store.set('wallpaperMode', wallpaperActive);
+    if (tray) createTray();
+    return wallpaperActive;
+}
+ipcMain.handle('set-wallpaper-mode', (_e, on) => setWallpaperMode(!!on));
+
 ipcMain.on('set-desktop-mode', (event, value) => {
     if (mainWindow) {
         if (value) {
@@ -807,7 +897,7 @@ ipcMain.handle('get-settings', () => {
         'text-color': store.get('text-color', '#0f172a'),
         'accent-color': store.get('accent-color', '#1a73e8'),
         'today-color': store.get('today-color', '#1a73e8'),
-        'bg-opacity': store.get('bg-opacity', 0.94),
+        'bg-opacity': store.get('bg-opacity', 1),
         startOfWeek: store.get('startOfWeek', 0),
         defaultViewMode: store.get('defaultViewMode', 'month'),
         timeDisplayStyle: store.get('timeDisplayStyle', 'badge'),

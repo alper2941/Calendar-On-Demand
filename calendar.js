@@ -44,8 +44,7 @@ async function listEvents(auth, timeMin, timeMax, selectedCalendarIds = null) {
             timeMin: timeMin.toISOString(),
             timeMax: timeMax.toISOString(),
             singleEvents: true,
-            orderBy: 'startTime',
-            eventLabelVersion: 1
+            orderBy: 'startTime'
         });
         
         const events = res.data.items.map(event => ({
@@ -63,12 +62,14 @@ async function listEvents(auth, timeMin, timeMax, selectedCalendarIds = null) {
     return allEvents;
 }
 
+// Etiket sistemi (eventLabelVersion) bu hesaplarda renkleri kaydetmiyor; klasik colorId kullanılır.
+const stripLabel = ({ eventLabelId, ...rest }) => rest;
+
 async function createEvent(auth, event) {
     const calendar = google.calendar({ version: 'v3', auth });
     const res = await calendar.events.insert({
         calendarId: 'primary',
-        resource: event,
-        eventLabelVersion: 1
+        resource: stripLabel(event)
     });
     return res.data;
 }
@@ -78,8 +79,7 @@ async function updateEvent(auth, calendarId, eventId, event) {
     const res = await calendar.events.update({
         calendarId: calendarId || 'primary',
         eventId: eventId,
-        resource: event,
-        eventLabelVersion: 1
+        resource: stripLabel(event)
     });
     return res.data;
 }

@@ -25,7 +25,7 @@ try {
     let lastSyncTime = 0;
     let syncTimer = null;
     let errorCount = 0;
-    const NORMAL_SYNC_INTERVAL = 900000; // 15 minutes
+    const NORMAL_SYNC_INTERVAL = 300000; // 5 dakika
     const BACKOFF_DELAYS = [60000, 120000, 240000, 900000]; // 1m, 2m, 4m, 15m
 
     function scheduleNextSync(delay) {
@@ -505,7 +505,7 @@ try {
         'text-color': '#0f172a',
         'accent-color': '#1a73e8',
         'today-color': '#1a73e8',
-        'bg-opacity': 0.94
+        'bg-opacity': 1
     };
 
     function applyTheme(theme) {
@@ -1862,6 +1862,7 @@ try {
             }
         } catch (err) {
             console.error('Failed to save event:', err);
+            alert('Görev kaydedilemedi: ' + (err.message || err).toString().replace(/^Error invoking remote method [^:]+: Error: /, ''));
         }
         
         fetchEvents();
@@ -1871,15 +1872,20 @@ try {
         quickAddInput.onkeydown = async (e) => {
             if (e.key === 'Enter') {
                 await saveCurrentEvent();
+                closeAllModals();
             } else if (e.key === 'Escape') {
                 closeAllModals();
             }
         };
     }
 
+    const closeQuickAddBtn = document.getElementById('close-quick-add');
+    if (closeQuickAddBtn) closeQuickAddBtn.onclick = () => closeAllModals(); // kaydetmeden kapat
+
     if (saveEventBtn) {
         saveEventBtn.onclick = async () => {
             await saveCurrentEvent();
+            closeAllModals();
         };
     }
 
@@ -2104,7 +2110,7 @@ try {
     }
 
     window.onclick = async (e) => { 
-        if (e.target.classList.contains('modal')) {
+        if (e.target.classList.contains('modal') && e.target !== quickAddModal) {
             await handleAutoSaveAndClose(); 
         }
     };
@@ -2165,6 +2171,7 @@ try {
         } else if (e.key === 't' || e.key === 'T') {
             toggleTaskDrawer();
         } else if (e.key === 'Escape') {
+            if (quickAddModal && !quickAddModal.classList.contains('hidden')) { closeAllModals(); return; }
             if (isTaskDrawerOpen) toggleTaskDrawer(false);
         }
     });
@@ -2374,6 +2381,19 @@ try {
         });
     }
 
+    const wallpaperBtn = document.getElementById('wallpaper-btn');
+    if (wallpaperBtn) wallpaperBtn.onclick = () => ipcRenderer.invoke('set-wallpaper-mode', true);
+
+    const pinCenterBtn = document.getElementById('pin-center-btn');
+    if (pinCenterBtn) pinCenterBtn.onclick = async () => {
+        const r = await ipcRenderer.invoke('pin-center-desktop');
+        if (r && r.locked) {
+            updateLockUI(true);
+            if (desktopModeCheck) desktopModeCheck.checked = true;
+            if (alwaysOnTopCheck) alwaysOnTopCheck.checked = false;
+        }
+    };
+
     function updateLockUI(isLocked) {
         if (lockBtn) {
             lockBtn.classList.toggle('is-locked', isLocked);
@@ -2395,7 +2415,10 @@ try {
 
     if (settingsToggle) {
         settingsToggle.onclick = async () => {
+            if (settingsOverlay) settingsOverlay.classList.remove('hidden');
             try {
+                const si = document.getElementById('sync-info');
+                if (si) si.textContent = 'Google ile otomatik senkronizasyon: 5 dakikada bir (ve pencereye dönünce). Son senkronizasyon: ' + (lastSyncTime ? new Date(lastSyncTime).toLocaleTimeString('tr-TR') : 'henüz yok') + '. Güncelleme kontrolü: saatte bir.';
                 const settings = await ipcRenderer.invoke('get-settings');
                 const startup = await ipcRenderer.invoke('get-login-settings');
                 if (startupCheck) startupCheck.checked = startup ? startup.openAtLogin : false;
@@ -2493,7 +2516,6 @@ try {
                     if (cList) cList.innerHTML = '<div style="font-size: 0.85rem; color: #ff5252;">Yüklenemedi</div>';
                 }
 
-                if (settingsOverlay) settingsOverlay.classList.remove('hidden');
             } catch (err) {
                 console.error('Settings error:', err);
                 alert('Ayarlar açılamadı: ' + err.message);
@@ -2764,7 +2786,6 @@ try {
         if (notifiedEventIds.size > 200) notifiedEventIds.clear();
     }
     setInterval(checkUpcomingNotifications, 60000);
-    setInterval(() => fetchEvents(), 5 * 60 * 1000); // arka planda otomatik yenile
     window.addEventListener('focus', () => debouncedFetchEvents(300));
 
 

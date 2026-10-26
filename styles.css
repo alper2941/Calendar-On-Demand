@@ -1,7 +1,7 @@
 :root {
     --fx: 15, 23, 42;
     --bg-base: #ffffff;
-    --bg-opacity: 0.94;
+    --bg-opacity: 1;
     --text-color: #0f172a;
     --accent-color: #1a73e8;
     --today-color: #1a73e8;
@@ -86,7 +86,6 @@ body.locked-mode header {
     bottom: 0;
     background: var(--bg-base);
     opacity: var(--bg-opacity);
-    backdrop-filter: blur(14px);
     z-index: -1;
 }
 
@@ -158,8 +157,6 @@ header button,
     display: flex;
     justify-content: center;
     align-items: center;
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(var(--fx), 0.22);
     transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -262,7 +259,6 @@ header button svg,
 
 #settings-overlay.modal {
     background: rgba(0, 0, 0, 0.3);
-    backdrop-filter: blur(4px);
 }
 
 #settings-overlay .modal-content {
@@ -1214,7 +1210,6 @@ input[type="color"]::-webkit-color-swatch {
     z-index: 10;
     display: flex;
     flex-direction: column;
-    backdrop-filter: blur(8px);
     background: rgba(255, 255, 255, 0.92);
     border: 1px solid rgba(var(--fx), 0.12);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
@@ -2142,8 +2137,6 @@ body.task-drawer-open .day-cell:hover::after {
     background: rgba(255, 255, 255, 0.92);
     border: 1px solid var(--border-color);
     border-radius: 10px;
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
     display: flex;
     flex-direction: column;
     padding: 10px;
@@ -2466,3 +2459,36 @@ body.task-drawer-open .day-cell:hover::after {
 .todo-delete-btn, .drawer-task-delete, .drawer-task-delete-btn { color: #d93025 !important; font-weight: 700; opacity: 1 !important; }
 .color-opt-default.active { background: var(--accent-color) !important; color: #fff !important; }
 .todo-account-tag, .account-tag { color: #0f172a !important; font-weight: 600; }
+
+/* Marka alanı */
+.brand { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; min-width: 0; -webkit-app-region: drag; }
+.brand-logo { height: 80px; width: auto; flex-shrink: 0; }
+.brand-text { display: flex; flex-direction: column; line-height: 1.15; min-width: 0; }
+.brand-name { font-size: 1.85rem; font-weight: 800; color: #0f172a; letter-spacing: 0.01em; }
+.brand-sub { font-size: 0.82rem; font-weight: 700; color: #475569; letter-spacing: 0.04em; text-transform: uppercase; }
+@media (max-width: 760px) { .brand-sub { display: none; } }
+@media (max-width: 560px) { .brand-text { display: none; } }
+#sync-info { color: #334155 !important; font-weight: 600; font-size: 0.78rem; line-height: 1.4; }
+
+/* Net görünüm: parlama/gölge/mavi sis kaldırıldı */
+.widget-container { box-shadow: none !important; border: 1px solid #cbd5e1 !important; }
+.day-cell, .day-cell:hover { box-shadow: none !important; transform: none !important; border: 1px solid #dbe1ea !important; }
+.day-cell:hover { background: #f1f5f9 !important; border-color: var(--accent-color) !important; }
+.day-cell.saturday, .day-cell.sunday, .day-cell.weekend { background: #f8fafc !important; }
+.day-cell.today { box-shadow: none !important; border: 2px solid var(--today-color) !important; }
+.nav-btns button, .icon-btn { background: #ffffff !important; border: 1px solid #cbd5e1 !important; box-shadow: none !important; }
+.nav-btns button:hover, .icon-btn:hover { background: #f1f5f9 !important; }
+.event-item, .event-item:hover, .week-event-card, .week-event-card:hover { box-shadow: none !important; filter: none !important; }
+.event-item { background: #e3edfc; border: 1px solid #cddcf5; }
+header { align-items: center; }
+
+/* Sade görev penceresi: tarih, konum, önemli/vurgu gizli (alanlar işlevini korur) */
+.todo-date-row, #event-location, #important-check, #highlight-cell-check { display: none !important; }
+#extra-fields .setting-item:has(#important-check), #extra-fields .setting-item:has(#highlight-cell-check) { display: none !important; }
+
+/* Görev penceresi: çarpı (kaydetmez) ve alttaki Kaydet */
+.todo-header { display: flex; align-items: center; justify-content: space-between; }
+.quick-add-close { background: transparent; border: none; font-size: 1.1rem; font-weight: 700; color: #475569; cursor: pointer; padding: 2px 8px; border-radius: 6px; }
+.quick-add-close:hover { background: #fee2e2; color: #d93025; }
+.primary-btn.save-bottom { width: 100%; height: 40px; font-size: 0.95rem; margin-top: 6px; }
+.todo-input-row input { flex: 1; }
