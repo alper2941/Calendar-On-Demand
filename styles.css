@@ -2502,3 +2502,9 @@ header { align-items: center; }
 .day-cell.today .day-number { color: #d93025 !important; font-weight: 800; }
 .week-day-column.today { box-shadow: inset 0 0 0 3px #d93025; }
 .week-header-day-cell.today .week-header-day-num { background: #d93025 !important; color: #fff !important; box-shadow: 0 2px 8px rgba(217, 48, 37, 0.4) !important; }
+
+/* Uzun uygulama adı için başlık ölçüsü */
+.brand-name { font-size: 1.5rem !important; white-space: nowrap; }
+.brand-sub { font-size: 0.78rem !important; }
+@media (max-width: 1000px) { .brand-name { font-size: 1.15rem !important; } .brand-sub { display: none; } }
+@media (max-width: 760px) { .brand-text { display: none; } }

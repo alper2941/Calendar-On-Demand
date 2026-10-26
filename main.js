@@ -133,7 +133,7 @@ if (!gotTheLock) {
             console.log('Tray created.');
 
             if (!store.get('token')) {
-                new Notification({ title: 'Calendar-On-Demand', body: 'Tarayıcıda açılan sayfada Google hesabınla giriş yapıp izin ver.' }).show();
+                new Notification({ title: 'Kocaeli SAKOM Takvim Uygulaması', body: 'Tarayıcıda açılan sayfada Google hesabınla giriş yapıp izin ver.' }).show();
                 if (mainWindow) mainWindow.webContents.once('did-finish-load', () => mainWindow.webContents.send('auth-waiting'));
             }
             authenticate().then((client) => {
@@ -395,7 +395,7 @@ function createTray() {
     ]);
 
 
-    tray.setToolTip('Calendar-On-Demand');
+    tray.setToolTip('Kocaeli SAKOM Takvim Uygulaması');
     tray.setContextMenu(contextMenu);
 
     tray.on('click', () => {

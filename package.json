@@ -1,8 +1,8 @@
 {
   "name": "calendar-on-demand",
   "version": "1.7.0",
-  "description": "Türkçe masaüstü Google Takvim widget'ı",
-  "author": "Calendar-On-Demand Team",
+  "description": "Kocaeli SAKOM Takvim Uygulaması",
+  "author": "Kocaeli SAKOM",
   "main": "main.js",
   "dependencies": {
     "electron-store": "^8.1.0",
@@ -20,7 +20,7 @@
   },
   "build": {
     "appId": "com.calendar.ondemand",
-    "productName": "Calendar-On-Demand",
+    "productName": "Kocaeli SAKOM Takvim Uygulaması",
     "directories": {
       "output": "dist"
     },
@@ -39,19 +39,22 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "tray_icon.png",
+      "icon": "icon.png",
       "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "shortcutName": "Kocaeli SAKOM Takvim Uygulaması"
     },
     "publish": {
       "provider": "github",
       "owner": "KULLANICI_ADI",
       "repo": "Calendar-On-Demand",
       "releaseType": "release"
-    }
+    },
+    "executableName": "Kocaeli-SAKOM-Takvim",
+    "artifactName": "Kocaeli-SAKOM-Takvim-Kurulum-${version}.exe"
   }
 }
