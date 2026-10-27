@@ -390,7 +390,9 @@ try {
 
     if (eventEndDate) {
         eventEndDate.addEventListener('change', () => {
-            if (eventEndDate.value && eventStartDate && (!eventStartDate.value || eventEndDate.value < eventStartDate.value)) {
+            // Bitiş tarihi yazılırken ("1" → "12") ara değerler başlangıcı bozmasın: başlangıca dokunma.
+            // Bitiş başlangıçtan önceyse kayıt sırasında başlangıca eşitlenir.
+            if (eventEndDate.value && eventStartDate && !eventStartDate.value) {
                 eventStartDate.value = eventEndDate.value;
             }
             syncMultiDayAllDayState();
