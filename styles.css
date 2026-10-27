@@ -2483,7 +2483,7 @@ body.task-drawer-open .day-cell:hover::after {
 header { align-items: center; }
 
 /* Sade görev penceresi: tarih, konum, önemli/vurgu gizli (alanlar işlevini korur) */
-.todo-date-row, #event-location, #important-check, #highlight-cell-check { display: none !important; }
+#event-location, #important-check, #highlight-cell-check { display: none !important; }
 #extra-fields .setting-item:has(#important-check), #extra-fields .setting-item:has(#highlight-cell-check) { display: none !important; }
 
 /* Görev penceresi: çarpı (kaydetmez) ve alttaki Kaydet */
@@ -2508,3 +2508,9 @@ header { align-items: center; }
 .brand-sub { font-size: 0.82rem !important; }
 @media (max-width: 760px) { .brand-sub { display: none; } }
 @media (max-width: 560px) { .brand-text { display: none; } }
+
+/* Tarih aralığı satırı: kutular pencereye sığsın */
+.todo-date-row { gap: 6px; }
+.todo-date-row .date-inputs-container { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; }
+.todo-date-row .date-picker-input { flex: 1; min-width: 0; width: 100%; font-size: 0.78rem; padding: 4px 4px; }
+.todo-date-row .row-label-pill { flex-shrink: 0; font-size: 0.72rem; padding: 4px 6px; }
